@@ -514,7 +514,7 @@ export default {
       return error(404,'Not found');
     }catch(e){return error(500,e instanceof Error?e.message:'Unhandled server error');}
   },
-  async scheduled(_event:ScheduledEvent,env:Env):Promise<void>{
+  async scheduled(_event:ScheduledController,env:Env):Promise<void>{
     await runRetention(env);
   }
 } satisfies ExportedHandler<Env>;
