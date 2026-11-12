@@ -32,6 +32,7 @@ The registration's exact OIDC authentication origin is permitted by default; if 
 
 ## Keys and configuration
 - `HMAC_KEY_V1`, `SESSION_SECRET`: independent, strong random secrets in Workers Secrets.
+- Optional `HMAC_KEY_V2` and `HMAC_ACTIVE_VERSION=v2` for an explicit versioned key transition. Existing courses keep their previous link key versions; preserve old secrets while those links remain active and coordinate any global identifier discontinuity with institutional policy.
 - `TOOL_PRIVATE_JWK`: optional RSA private JWK for Deep Linking; securely stored in Workers Secrets.
 - Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
 - Data retention schedule and staff authorization policy are TBD.

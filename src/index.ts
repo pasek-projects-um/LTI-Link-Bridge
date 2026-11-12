@@ -3,7 +3,7 @@ import { buildDestination, allowedDestination, escapeHtml } from './links.ts';
 import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
 
 interface Env {
-  DB: D1Database; HMAC_KEY_V1: string; SESSION_SECRET: string;
+  DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
   TOOL_PRIVATE_JWK?: string; PUBLIC_BASE_URL: string; SESSION_TTL_SECONDS?: string;
   DESTINATION_ALLOWLIST?: string; ENABLE_LOCAL_HTTP?: string;
 }
@@ -31,7 +31,19 @@ async function parseForm(req:Request) { const data=await req.formData(); return 
 async function registration(env:Env,issuer:string,clientId:string):Promise<Registration|null> {
   return env.DB.prepare('SELECT * FROM deployments WHERE issuer=? AND client_id=? LIMIT 1').bind(issuer,clientId).first<Registration>();
 }
-function instructor(claims:Launch):boolean {const roles=claims[roleClaim];return Array.isArray(roles) && roles.some((r:string)=>r===INSTRUCTOR || r===ADMIN || r.endsWith('#Instructor') || r.endsWith('#Administrator'));}
+function instructor(claims:Launch):boolean {const roles=claims[roleClaim];const teachingAssistant='http://purl.imsglobal.org/vocab/lis/v2/membership#TeachingAssistant';return Array.isArray(roles) && roles.some((r:string)=>r===INSTRUCTOR || r===ADMIN || r===teachingAssistant);}
+// Historical links pin their key version; a new active key only affects newly
+// created courses. Existing course links retain their original version.
+function activeKeyVersion(env:Env):string {
+  const version=env.HMAC_ACTIVE_VERSION || 'v1';
+  if(!['v1','v2'].includes(version))throw new Error('Unsupported active HMAC key version');
+  return version;
+}
+function keyForVersion(env:Env,version:string):string {
+  if(version==='v1')return env.HMAC_KEY_V1;
+  if(version==='v2' && env.HMAC_KEY_V2)return env.HMAC_KEY_V2;
+  throw new Error('Required HMAC secret is missing for version '+version);
+}
 function contextId(claims:Launch):string {const value=claims[courseClaim]?.id; if(typeof value!=='string' || !value) throw new Error('Missing course context');return value;}
 function resourceId(claims:Launch):string {const value=claims[resourceClaim]?.id; if(typeof value!=='string' || !value) throw new Error('Missing resource link');return value;}
 function cookieHeader(value:string,ttl:number,site:'None'|'Lax'='None') {return `${cookieName}=${value}; HttpOnly; Secure; SameSite=${site}; Path=/; Max-Age=${ttl}`;}
@@ -140,7 +152,7 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   if(!bound)await env.DB.prepare('INSERT OR IGNORE INTO link_resources(deployment_id,course_id,resource_link_id,link_id) VALUES(?,?,?,?)').bind(reg.id,course,resource,link.id).run();
   if(!allowedDestination(link.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(403,'Destination domain is not approved');
   if(!isLocalDevelopment(env) && new URL(link.destination).protocol!=='https:')return error(403,'HTTP destinations disabled');
-  const version='v1';const secret=env.HMAC_KEY_V1;
+  const version=String(link.key_version||'v1');const secret=keyForVersion(env,version);
   const base=[reg.institution,reg.issuer,reg.client_id,reg.deployment_id];
   const courseCode=await pseudonym(secret,'C',version,...base,course);
   const userParts=link.user_scope==='global'?[user]:link.user_scope==='activity'?[course,link.id,user]:[course,user];
@@ -458,7 +470,10 @@ async function createLink(req:Request,env:Env):Promise<Response>{
       try{validatedDeepLinkReturn(returnUrl,reg,env);}catch{return error(403,'Deep Linking return origin not registered');}
     }
     const scope=['global','course','activity'].includes(form.scope)?form.scope:'course';const id=randomId();
-    await env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString()).run();
+    const existingVersion=await env.DB.prepare('SELECT key_version FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at LIMIT 1').bind(deploy,course).first<{key_version:string}>();
+    const keyVersion=existingVersion?.key_version || activeKeyVersion(env);
+    keyForVersion(env,keyVersion);
+    await env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion).run();
     if(returnUrl){
       if(!env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();if(!reg)return error(404,'Deployment missing');

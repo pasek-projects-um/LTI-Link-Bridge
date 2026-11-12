@@ -248,3 +248,59 @@ test('optional destination-side arrivals require per-link credentials and resist
   assert.equal((await send(replacement,{...event,event:'finished',nonce:crypto.randomUUID(),observed_at:new Date().toISOString()})).status,201);
   assert.equal((await fetch(settingsUrl)).status,403);
 });
+
+test('only exact recognized LTI instructor roles grant course dashboard access',async()=>{
+  const spoof=await launch({role:'spoof',kind:'dashboard',user:'role-spoof'});
+  assert.equal(spoof.post.status,403);
+  const assistant=await launch({role:'ta',kind:'dashboard',user:'ta-1'});
+  assert.equal(assistant.post.status,200);
+  const cookie=assistant.post.headers.get('set-cookie').split(';')[0];
+  const page=await fetch(bridge+'/instructor?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  assert.equal(page.status,200);
+});
+test('concurrent genuine student launches yield distinct durable events',async()=>{
+  const launches=await Promise.all(Array.from({length:12},(_,i)=>launch({user:'concurrent-'+i,link:'sim-activity-a'})));
+  for(const result of launches)assert.equal(result.post.status,303);
+  const uuids=launches.map(x=>new URL(x.post.headers.get('location')).searchParams.get('launch'));
+  assert.equal(new Set(uuids).size,12);
+  const instructor=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  const cookie=instructor.post.headers.get('set-cookie').split(';')[0];
+  const history=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=launches',{headers:{Cookie:cookie}});
+  assert.equal(history.status,200);
+  const csv=await history.text();
+  for(const launchId of uuids)assert.ok(csv.includes(launchId),'Missing durable launch '+launchId);
+});
+test('new courses use the explicitly active HMAC version; existing courses stay pinned',async()=>{
+  const teacher=await launch({role:'instructor',kind:'deep',user:'teacher-c',course:'course-c'});
+  assert.equal(teacher.post.status,200);
+  const landing=await teacher.post.text(),href=decodeHtml(landing.match(/href="([^"]+)"/)[1]);
+  const resumed=await fetch(bridge+href,{redirect:'manual'});
+  assert.equal(resumed.status,303);
+  const cookie=resumed.headers.get('set-cookie').split(';')[0];
+  const builder=await fetch(new URL(resumed.headers.get('location'),bridge),{headers:{Cookie:cookie}});
+  assert.equal(builder.status,200);
+  const page=await builder.text();
+  const created=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
+    course:hidden(page,'course'),deployment:hidden(page,'deployment'),return:hidden(page,'return'),
+    data:hidden(page,'data'),csrf:hidden(page,'csrf'),
+    title:'V2 Test Activity',destination:sim+'/activity',scope:'course',
+    user:'on',course_code:'on',link:'on',launch:'on'
+  })});
+  assert.equal(created.status,200);
+  const jwt=hidden(await created.text(),'JWT');
+  const finish=await fetch(sim+'/return',{method:'POST',body:new URLSearchParams({JWT:jwt})});
+  assert.equal(finish.status,200);
+  const placements=await (await fetch(sim+'/links')).json();
+  const link=placements['course-c'].at(-1).link;
+  const student=await launch({role:'student',course:'course-c',user:'student-1',link});
+  assert.equal(student.post.status,303);
+  const mapping=await fetch(bridge+'/instructor/export?course=course-c&deployment=sim-1&type=identities',{headers:{Cookie:cookie}});
+  assert.equal(mapping.status,200);
+  const mappingCsv=await mapping.text();
+  assert.ok(mappingCsv.includes('"v2"'),'New course should use active v2');
+  const oldInstructor=await launch({role:'instructor',kind:'dashboard',user:'teacher-1',course:'course-a'});
+  const oldCookie=oldInstructor.post.headers.get('set-cookie').split(';')[0];
+  const oldMapping=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=identities',{headers:{Cookie:oldCookie}});
+  assert.equal(oldMapping.status,200);
+  assert.ok((await oldMapping.text()).includes('"v1"'),'Preexisting links must remain on v1');
+});

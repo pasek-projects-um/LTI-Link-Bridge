@@ -20,6 +20,8 @@ writeFileSync(join(root, 'keys.json'), JSON.stringify(keys), { mode: 0o600 });
 const rand = () => randomBytes(32).toString('base64url');
 const vars = [
   'HMAC_KEY_V1=' + rand(),
+  'HMAC_KEY_V2=' + rand(),
+  'HMAC_ACTIVE_VERSION=v2',
   'SESSION_SECRET=' + rand(),
   'TOOL_PRIVATE_JWK=' + JSON.stringify(tool.privateJwk),
   'ENABLE_LOCAL_HTTP=1',
