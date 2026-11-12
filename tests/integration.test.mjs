@@ -163,7 +163,7 @@ test('instructor can manage multiple section memberships for observed students',
   assert.equal(second.post.status,303);
   assert.match(new URL(second.post.headers.get('location')).searchParams.get('section'),/^S_/);
   const roster=await (await fetch(uri,{headers:{Cookie:cookie}})).text();
-  assert.match(roster,/section-88; section-99|section-99; section-88/);
+  assert.match(roster,/section-88 \[instructor\].*section-99 \[instructor\]|section-99 \[instructor\].*section-88 \[instructor\]/);
   const student=await fetch(uri);
   assert.equal(student.status,403);
   const incorrect=await fetch(bridge+'/instructor/sections',{method:'POST',redirect:'manual',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({...form, user_id:'student-not-seen'})});
