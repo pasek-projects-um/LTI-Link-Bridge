@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.simulator/
+*.sqlite
+*.sqlite3
+.DS_Store
+coverage/

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lti-link-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "lti-link-bridge",
+    "database_id": "00000000-0000-4000-8000-000000000001",
+    "migrations_dir": "migrations"
+  }],
+  "triggers": { "crons": ["0 5 * * *"] },
+  "vars": {
+    "PUBLIC_BASE_URL": "http://localhost:8787",
+    "SESSION_TTL_SECONDS": "14400"
+  }
+}

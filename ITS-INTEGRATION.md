@@ -1,0 +1,61 @@
+# ITS integration and security review (DRAFT — NOT READY FOR APPROVAL)
+
+## Purpose
+LTI Link Bridge brokers Canvas-authenticated launches of instructor-configured allowlisted external activities, provides stable HMAC-keyed pseudonyms, and maintains per-launch audit history and course-limited mapping exports.
+
+## Data collected and stored
+- Verified LTI issuer/client/deployment, course context, user subject, optional Canvas name/email, roles (in transient processing), resource-link ID, timestamp, link target origin, pseudonymized codes, export audit metadata.
+- Sensitive `identities`/`identity_codes` are separated from general `launches` in SQL tables, but **not** in separate encryption domains or databases yet.
+- Section membership may now be instructor-managed through an authenticated, course-scoped dashboard, only for subjects established by verified LTI launches. Multiple memberships are stored and manual edits audited. Current Canvas API section lookup is not implemented.
+
+## Data transmitted to destinations
+Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. An optional destination-side JavaScript helper can send activity events to an endpoint operated by the destination itself. The Bridge separately supports an authenticated server-to-server arrival API: destination servers report `opened`, `started`, `submitted`, or `finished` events using per-link 256-bit bearer secrets (stored hashed in D1) that are never forwarded in URLs or browser JavaScript. These callbacks are destination assertions, not independent proof of student completion. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
+
+## LTI and Canvas permissions
+LTI 1.3 OIDC login, resource launch, and Deep Linking. No Canvas API permissions used in this milestone; future section membership lookup will require separately scoped API authorization and institutional consent.
+
+## Authentication
+Platform RS256 ID token verified against platform JWKS using `jose`; checks issuer/audience/deployment/state/nonce/claims. States stored in Cloudflare D1. Instructor access is course-scoped to verified LTI roles and sessions. A one-use D1 continuation ticket opens the instructor dashboard or Deep Linking builder in a top-level tab to mitigate blocked iframe cookies. Browser compatibility, return URL restrictions and CSRF controls still require institutional review.
+
+## Storage, retention, deletion
+Cloudflare Workers + D1, region/account-dependent location. The instructor dashboard formats timestamps in the instructor browser's local time zone without altering UTC export records. A daily scheduled cleanup now deletes expired ephemeral authentication state. Educational-record deletion is **disabled by default** pending approval. Once `RETENTION_ENABLED=1` and explicit launch/identity/audit retention durations are configured, the Worker deletes aged launches, arrival reports, orphaned protected identity mappings/section assignments, and aged audit entries in bounded batches. Legal hold, exemptions, access requests, backup-restoration treatment, and institution-specific periods still require an approved operating procedure before this can be enabled.
+
+## Required registration URLs
+- OIDC login initiation: `https://<approved-host>/lti/login`
+- Redirect / launch: `https://<approved-host>/lti/launch`
+- Public tool JWKS: `https://<approved-host>/lti/jwks`
+- Expected LTI 1.3 issuer, client ID, deployment ID, Canvas authorization URL, Canvas JWKS URL and environment (production/test/beta).
+
+## Deep Linking return URL controls
+
+The registration's exact OIDC authentication origin is permitted by default; if the authorized Canvas Deep Linking callback uses a different origin, configure the exact additional origin in `deployments.deep_link_return_origins` before testing. Wildcard return hosts and arbitrary instructor-provided callback origins are rejected. Loopback HTTP is permitted only in explicitly configured local simulation.
+
+## Canvas enrollment API integration
+
+Optional per-deployment Canvas section lookup is implemented but not yet validated against a real Canvas instance. ITS should set `deployments.canvas_api_origin` to the exact trusted Canvas origin and provision `CANVAS_API_TOKENS` as a Worker Secret containing a JSON object mapping internal deployment IDs to separate Canvas bearer credentials. No token is sent to students or destination websites. Confirm that `GET /api/v1/courses/{course_id}/enrollments?user_id={user_id}&type[]=StudentEnrollment` is available with the approved account permissions and that LTI context/user IDs correspond to Canvas REST IDs. No wildcard API hosts, redirects, or arbitrary API origins are permitted.
+
+API results are filtered to the exact user/course, active/invited enrollments and valid section IDs. All memberships are stored; instructor overrides take precedence. A failed lookup retains existing mappings, while section-required links fail if no verified or manual mapping is known. Use a least-privilege account/token, credential rotation, and institutional access review.
+
+## Keys and configuration
+- `HMAC_KEY_V1`, `SESSION_SECRET`: independent, strong random secrets in Workers Secrets.
+- Optional `HMAC_KEY_V2` and `HMAC_ACTIVE_VERSION=v2` for an explicit versioned key transition. Existing courses keep their previous link key versions; preserve old secrets while those links remain active and coordinate any global identifier discontinuity with institutional policy.
+- `TOOL_PRIVATE_JWK`: optional RSA private JWK for Deep Linking; securely stored in Workers Secrets.
+- Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
+- Data retention schedule and staff authorization policy are TBD.
+
+## Testing and approval checklist
+- [x] Implement local test-key Canvas simulator and automated OIDC, replay, launch, Deep Linking and authorization tests (Cloudflare CI).
+- [ ] Extend test suite and perform Canvas browser validation with university test environment.
+- [ ] Resolve third-party cookie behavior under Canvas iframe restrictions.
+- [x] Add explicit registered-origin validation for Deep Linking callbacks.
+- [ ] Validate Canvas placement and actual institutional return URL with ITS.
+- [ ] Obtain ITS-approved, least-privilege Canvas API credential and validate section enrollment query, pagination, API IDs and revocation.
+- [ ] Verify course and instructor access isolation under adversarial scenarios.
+- [x] Implement cursor-streamed complete CSV exports, CSV formula neutralization and identity-export audits.
+- [ ] Load-test institutional-scale exports and confirm institution-approved audit retention.
+- [ ] Approve explicit `RETENTION_ENABLED`, launch/identity/audit retention intervals, legal holds and handling of backups prior to any real deletion.
+- [ ] Review who can generate and hold per-link destination callback credentials, server-to-server arrival event reliability, retention and incident response.
+- [ ] Review FERPA classification, institutional vendor agreement, data residency, retention, breach reporting and incident response.
+- [ ] Conduct dependency/security assessment and network testing.
+- [ ] Register in institutional test Canvas and validate without production student data.
+- [ ] Review final deployment and ITS approval.

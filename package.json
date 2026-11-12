@@ -1,0 +1,26 @@
+{
+  "name": "lti-link-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "test": "node --test tests/crypto.test.mjs tests/sdk.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "simulator:setup": "node simulator/setup.mjs",
+    "test:integration": "node --test tests/integration.test.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
