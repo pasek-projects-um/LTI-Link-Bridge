@@ -12,7 +12,7 @@ A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to i
 
 ## Important current limitations
 
-This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation, optional browser SDK, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
+This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
 
 ## Install and local start
 
@@ -39,6 +39,7 @@ Each accepted, authorized resource launch has its own UUID. Identical token retr
 - `src/links.ts`: destination validation and query construction.
 - `migrations/`: D1 schema.
 - `simulator/`: signed local Canvas simulator and test-key setup.
+- `browser/`: optional destination-side activity instrumentation helper.
 - `tests/`: offline identifier tests and genuine OIDC / Deep Linking integration tests.
 - `ITS-INTEGRATION.md`: institutional review worksheet.
 
@@ -66,6 +67,23 @@ Course dashboards link to **Manage sections**. An authorized instructor can map 
 ## Complete history exports
 
 Course-scoped CSV exports now use 400-row keyset-paginated streams instead of the former 100,000-row limit. Exports preserve UTC timestamps. Identity exports record an audit event and neutralize spreadsheet-formula-like fields. Large-load validation and an institutional retention policy are still required.
+
+## Optional destination-side JavaScript helper
+
+See `browser/bridge-client.mjs`. Destination websites can copy or bundle this small ES module; it is not tied to CourseApps or to a particular learning platform. It parses only validated pseudonymous URL parameters and can emit `page_opened`, `activity_started`, `submission_completed`, and `activity_finished` messages to a **same-origin receiver implemented by the destination**.
+
+Example:
+
+~~~javascript
+import { createBridgeTracker } from './bridge-client.mjs';
+const tracker = createBridgeTracker({ endpoint: '/api/activity-events' });
+await tracker.pageOpened();
+await tracker.activityStarted();
+await tracker.submissionCompleted({ result: 'saved' });
+await tracker.activityFinished();
+~~~
+
+The destination's endpoint must implement its own authorization, retention and analytics. The helper **does not report events to the Bridge** or confirm arrival unless a trusted server-side integration is added. Pseudonyms and launch UUIDs are correlation values, never authentication credentials. Do not include personal data in arbitrary event metadata.
 
 ## Remaining work before ITS review
 

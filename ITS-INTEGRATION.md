@@ -9,7 +9,7 @@ LTI Link Bridge brokers Canvas-authenticated launches of instructor-configured a
 - Section membership may now be instructor-managed through an authenticated, course-scoped dashboard, only for subjects established by verified LTI launches. Multiple memberships are stored and manual edits audited. Current Canvas API section lookup is not implemented.
 
 ## Data transmitted to destinations
-Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
+Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. An optional destination-side JavaScript helper can send activity events to an endpoint operated by the destination itself; no direct browser event-ingestion API is currently enabled on the Bridge. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
 
 ## LTI and Canvas permissions
 LTI 1.3 OIDC login, resource launch, and Deep Linking. No Canvas API permissions used in this milestone; future section membership lookup will require separately scoped API authorization and institutional consent.
