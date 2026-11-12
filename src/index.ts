@@ -1,11 +1,13 @@
 import { LTI, INSTRUCTOR, ADMIN, randomId, urlToken, pseudonym, fingerprint, verifyPlatformJwt, signDeepLink, publicJwk, hmac } from './crypto.ts';
 import { buildDestination, allowedDestination, escapeHtml } from './links.ts';
 import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
+import { runRetention } from './retention.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
   TOOL_PRIVATE_JWK?: string; PUBLIC_BASE_URL: string; SESSION_TTL_SECONDS?: string;
   DESTINATION_ALLOWLIST?: string; ENABLE_LOCAL_HTTP?: string;
+  RETENTION_ENABLED?: string; RETENTION_LAUNCH_DAYS?: string; RETENTION_IDENTITY_DAYS?: string; RETENTION_AUDIT_DAYS?: string;
 }
 type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null};
 type Launch = Record<string,any>;
@@ -511,5 +513,8 @@ export default {
       if(path==='/')return response(html('LTI Link Bridge','<p>Launch from your learning management system to access this tool.</p>'));
       return error(404,'Not found');
     }catch(e){return error(500,e instanceof Error?e.message:'Unhandled server error');}
+  },
+  async scheduled(_event:ScheduledEvent,env:Env):Promise<void>{
+    await runRetention(env);
   }
 } satisfies ExportedHandler<Env>;

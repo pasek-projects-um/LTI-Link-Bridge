@@ -6,3 +6,8 @@ SESSION_SECRET=REPLACE_WITH_32_OR_MORE_RANDOM_BYTES_BASE64URL
 # HMAC_ACTIVE_VERSION=v2
 # Optional for Deep Linking response; generate RSA keypair and publish public JWK via /lti/jwks.
 TOOL_PRIVATE_JWK=REPLACE_WITH_RSA_PRIVATE_JWK_JSON
+# Retention of educational records is OFF unless explicitly approved.
+# RETENTION_ENABLED=1
+# RETENTION_LAUNCH_DAYS=90
+# RETENTION_IDENTITY_DAYS=180
+# RETENTION_AUDIT_DAYS=365

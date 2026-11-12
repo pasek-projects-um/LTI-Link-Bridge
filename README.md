@@ -111,6 +111,16 @@ Old launches preserve their recorded pseudonyms and `key_version`; protected ide
 
 The local Canvas simulator intentionally sets both secrets and activates v2, so integration tests can verify that its preloaded course links remain v1 and a newly created course uses v2. Production environments should not copy simulator values.
 
+## Retention and automatic deletion (disabled until authorized)
+
+The Worker supports a daily UTC Cron Trigger (`05:00 UTC`) for technical-state cleanup. Expired OIDC states and instructor continuation tickets are deleted in bounded batches independent of educational-record retention, preventing indefinite accumulation of login-state tokens.
+
+**Education-record deletion is disabled by default.** It requires `RETENTION_ENABLED=1` **and all three explicit settings**: `RETENTION_LAUNCH_DAYS`, `RETENTION_IDENTITY_DAYS`, and `RETENTION_AUDIT_DAYS`. The minimum launch retention is 30 days, identity retention cannot be shorter than launch retention, and audit retention cannot be shorter than identity retention. Values above 3,650 days are rejected. Example policy for **simulator only**: `90`, `180`, and `365` days.
+
+Deletion runs in bounded chunks (300 old launch events and 300 old identities per run) and cascades manually through arrival events, identity-code mappings and instructor-managed sections; records with remaining attributable launches are preserved. Large historical backlogs may take multiple daily runs to clear. Periodic jobs do not delete configured links, active destination credentials, or verified instructor records. Real deployment must have ITS-approved retention, legal-hold, records-management, backup, appeal and disclosure procedures before enabling this setting.
+
+During local development, run `npx wrangler dev --local --test-scheduled` and invoke `http://localhost:8787/cdn-cgi/local/scheduled?cron=0+5+*+*+*` to test the scheduled handler. The simulator seeds deliberately aged synthetic records and the integration suite confirms that those records are removed without affecting current launches or mapping entries. Do not enable scheduled-test endpoints for production traffic.
+
 ## Remaining work before ITS review
 
 Extend coverage of issuer/deployment edge cases, harden Deep Linking return URL registration, prohibit loopback URLs in production, add Canvas API section lookup, external-destination callback deployment integration, additional key-version migration and institutional rotation governance, retention/purge workflows, stronger audit controls, accessibility review and production deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.

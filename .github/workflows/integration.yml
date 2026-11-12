@@ -21,7 +21,7 @@ jobs:
           set -eu
           node simulator/server.mjs > /tmp/lti-simulator.log 2>&1 &
           SIM_PID=$!
-          npx wrangler dev --local --port 8787 > /tmp/lti-worker.log 2>&1 &
+          npx wrangler dev --local --test-scheduled --port 8787 > /tmp/lti-worker.log 2>&1 &
           WORKER_PID=$!
           trap 'kill "$SIM_PID" "$WORKER_PID" 2>/dev/null || true; cat /tmp/lti-simulator.log; tail -100 /tmp/lti-worker.log' EXIT
           node --test tests/integration.test.mjs

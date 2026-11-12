@@ -18,7 +18,7 @@ LTI 1.3 OIDC login, resource launch, and Deep Linking. No Canvas API permissions
 Platform RS256 ID token verified against platform JWKS using `jose`; checks issuer/audience/deployment/state/nonce/claims. States stored in Cloudflare D1. Instructor access is course-scoped to verified LTI roles and sessions. A one-use D1 continuation ticket opens the instructor dashboard or Deep Linking builder in a top-level tab to mitigate blocked iframe cookies. Browser compatibility, return URL restrictions and CSRF controls still require institutional review.
 
 ## Storage, retention, deletion
-Cloudflare Workers + D1, region/account-dependent location. No automated retention, legal hold, purge, or subject access procedure yet. Institution must define retention periods and Cloudflare vendor requirements before approval.
+Cloudflare Workers + D1, region/account-dependent location. A daily scheduled cleanup now deletes expired ephemeral authentication state. Educational-record deletion is **disabled by default** pending approval. Once `RETENTION_ENABLED=1` and explicit launch/identity/audit retention durations are configured, the Worker deletes aged launches, arrival reports, orphaned protected identity mappings/section assignments, and aged audit entries in bounded batches. Legal hold, exemptions, access requests, backup-restoration treatment, and institution-specific periods still require an approved operating procedure before this can be enabled.
 
 ## Required registration URLs
 - OIDC login initiation: `https://<approved-host>/lti/login`
@@ -46,6 +46,7 @@ The registration's exact OIDC authentication origin is permitted by default; if 
 - [ ] Verify course and instructor access isolation under adversarial scenarios.
 - [x] Implement cursor-streamed complete CSV exports, CSV formula neutralization and identity-export audits.
 - [ ] Load-test institutional-scale exports and confirm institution-approved audit retention.
+- [ ] Approve explicit `RETENTION_ENABLED`, launch/identity/audit retention intervals, legal holds and handling of backups prior to any real deletion.
 - [ ] Review who can generate and hold per-link destination callback credentials, server-to-server arrival event reliability, retention and incident response.
 - [ ] Review FERPA classification, institutional vendor agreement, data residency, retention, breach reporting and incident response.
 - [ ] Conduct dependency/security assessment and network testing.

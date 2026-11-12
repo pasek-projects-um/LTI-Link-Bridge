@@ -304,3 +304,25 @@ test('new courses use the explicitly active HMAC version; existing courses stay 
   assert.equal(oldMapping.status,200);
   assert.ok((await oldMapping.text()).includes('"v1"'),'Preexisting links must remain on v1');
 });
+
+test('scheduled retention removes aged activity and mapping records while preserving current students',async()=>{
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const historyUrl=bridge+'/instructor/export?course=course-a&deployment=sim-1&type=launches';
+  const identitiesUrl=bridge+'/instructor/export?course=course-a&deployment=sim-1&type=identities';
+  const beforeLaunches=await (await fetch(historyUrl,{headers:{Cookie:cookie}})).text();
+  const beforeIdentities=await (await fetch(identitiesUrl,{headers:{Cookie:cookie}})).text();
+  assert.match(beforeLaunches,/00000000-0000-4000-8000-000000000101/);
+  assert.match(beforeIdentities,/old-student/);
+  assert.match(beforeLaunches,/student|course-a/);
+  const cron=await fetch(bridge+'/cdn-cgi/local/scheduled?cron=0+5+*+*+*');
+  assert.equal(cron.status,200,'Local Wrangler scheduled invocation failed');
+  const afterLaunches=await (await fetch(historyUrl,{headers:{Cookie:cookie}})).text();
+  const afterIdentities=await (await fetch(identitiesUrl,{headers:{Cookie:cookie}})).text();
+  assert.doesNotMatch(afterLaunches,/00000000-0000-4000-8000-000000000101/);
+  assert.doesNotMatch(afterIdentities,/old-student/);
+  assert.match(afterLaunches,/sim-activity-a/);
+  assert.match(afterIdentities,/student-1/);
+  assert.equal((await fetch(bridge+'/health')).status,200);
+});
