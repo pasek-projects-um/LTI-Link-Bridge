@@ -187,7 +187,12 @@ async function launch(req:Request,env:Env):Promise<Response>{
       const course=contextId(claims),user=String(claims.sub),at=new Date().toISOString();
       await env.DB.prepare('INSERT INTO instructors(deployment_id,course_id,user_id,last_verified_at) VALUES(?,?,?,?) ON CONFLICT(deployment_id,course_id,user_id) DO UPDATE SET last_verified_at=excluded.last_verified_at').bind(reg.id,course,user,at).run();
     }
-    if(claims[messageClaim]==='LtiResourceLinkRequest' && getLinkId(claims))return await handleResource(env,claims,reg,token);
+    if(claims[messageClaim]==='LtiResourceLinkRequest'){
+      const resource=resourceId(claims),course=contextId(claims);
+      const binding=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?')
+        .bind(reg.id,course,resource).first();
+      if(getLinkId(claims)||binding)return await handleResource(env,claims,reg,token);
+    }
     if(!instructor(claims))return error(403,'No configured student resource link');
     const course=contextId(claims);const cookie=await sessionCookie(env,String(claims.sub),course,reg.id);
     const nextPath=`/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(reg.id)}`;

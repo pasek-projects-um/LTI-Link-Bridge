@@ -47,7 +47,7 @@ async function makeToken(query) {
   const bad = hint.bad;
   const deep = hint.kind === 'deep';
   const now = Math.floor(Date.now() / 1000);
-  const custom = deep || hint.kind === 'dashboard' ? undefined : { bridge_link_id: hint.link };
+  const custom = deep || hint.kind === 'dashboard' || hint.missing === 'custom' ? undefined : { bridge_link_id: hint.link };
   const claims = {
     nonce: query.get('nonce'),
     [claim + 'version']: '1.3.0',

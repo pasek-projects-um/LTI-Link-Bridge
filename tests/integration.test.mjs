@@ -167,3 +167,12 @@ test('instructor can manage multiple section memberships for observed students',
   assert.equal(exportData.status,200);
   assert.match(await exportData.text(),/section-88/);
 });
+
+test('known resource placement resolves even if the optional custom claim is absent', async () => {
+  const seeded=await launch({user:'student-1',link:'sim-activity-a'});
+  assert.equal(seeded.post.status,303);
+  const fallback=await launch({user:'student-1',link:'sim-activity-a',missing:'custom'});
+  assert.equal(fallback.post.status,303);
+  const target=new URL(fallback.post.headers.get('location'));
+  assert.equal(target.searchParams.get('link'),'sim-activity-a');
+});
