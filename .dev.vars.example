@@ -1,0 +1,5 @@
+# Do not use sample values for production. Generate with a cryptographic RNG.
+HMAC_KEY_V1=REPLACE_WITH_32_OR_MORE_RANDOM_BYTES_BASE64URL
+SESSION_SECRET=REPLACE_WITH_32_OR_MORE_RANDOM_BYTES_BASE64URL
+# Optional for Deep Linking response; generate RSA keypair and publish public JWK via /lti/jwks.
+TOOL_PRIVATE_JWK=REPLACE_WITH_RSA_PRIVATE_JWK_JSON
