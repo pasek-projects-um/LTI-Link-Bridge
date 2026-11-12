@@ -348,6 +348,8 @@ test('Canvas enrollment API resolves verified student sections, sorts multiple m
   const html=await sections.text();
   assert.match(html,/api-1/);
   assert.match(html,/section-api/);
+  assert.match(html,/section-api \[canvas\]/);
+  assert.match(html,/Canvas API origin configured/);
   assert.match(html,/api-multi/);
   assert.match(html,/section-a/);
   assert.match(html,/section-z/);

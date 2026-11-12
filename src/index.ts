@@ -381,11 +381,13 @@ async function manageSections(req:Request,env:Env):Promise<Response>{
   }
   const all=await env.DB.prepare(
     "SELECT i.user_id,i.full_name,i.email, "+
-    "(SELECT group_concat(m.section_id, '; ') FROM section_memberships m "+
+    "(SELECT group_concat(m.section_id || ' [' || m.source || ']', '; ') FROM section_memberships m "+
     "WHERE m.deployment_id=i.deployment_id AND m.course_id=i.course_id AND m.user_id=i.user_id) AS section_ids "+
     "FROM identities i WHERE i.deployment_id=? AND i.course_id=? ORDER BY i.user_id LIMIT 500"
   ).bind(deploy,course).all<Record<string,unknown>>();
   const rows=all.results.map(row=>'<tr><td>'+escapeHtml(row.user_id)+'</td><td>'+escapeHtml(row.full_name||'not released')+'</td><td>'+escapeHtml(row.section_ids||'unresolved')+'</td></tr>').join('');
+  const configured=await env.DB.prepare('SELECT canvas_api_origin FROM deployments WHERE id=?').bind(deploy).first<{canvas_api_origin:string|null}>();
+  const status=configured?.canvas_api_origin?'Canvas API origin configured (token status not displayed)':'Canvas API not configured; instructor mappings only';
   const base='<input type="hidden" name="course" value="'+escapeHtml(course)+'"><input type="hidden" name="deployment" value="'+escapeHtml(deploy)+'"><input type="hidden" name="csrf" value="'+csrf+'">';
   const form='<form method="post">'+base+
     '<label>Verified Canvas user ID <input name="user_id" required maxlength="150"></label>'+
@@ -393,7 +395,7 @@ async function manageSections(req:Request,env:Env):Promise<Response>{
     '<button name="action" value="add">Add membership</button> <button name="action" value="remove">Remove instructor mapping</button></form>';
   return response(html('Instructor section mappings',
     '<p><a href="/instructor?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)+'">Back to dashboard</a></p>'+
-    '<p>Students must first launch an activity before section mapping. Multiple section memberships are supported. This manual mapping has not been verified against the Canvas API. An instructor-entered section takes precedence; otherwise the first lexicographically sorted Canvas section is used. Canvas API memberships are refreshed during section-enabled launches when the institution has configured an API token; on API failure, existing mappings remain available.</p>'+
+    '<p>'+escapeHtml(status)+'</p><p>Students must first launch an activity before section mapping. Multiple section memberships are supported. This manual mapping has not been verified against the Canvas API. An instructor-entered section takes precedence; otherwise the first lexicographically sorted Canvas section is used. Canvas API memberships are refreshed during section-enabled launches when the institution has configured an API token; on API failure, existing mappings remain available.</p>'+
     form+'<h2>Observed students and sections</h2><table><tr><th>Canvas user ID</th><th>Name</th><th>Section IDs</th></tr>'+rows+'</table>'+
     '<p>Showing up to 500 observed students. This interface never exposes mappings to students or destination websites.</p>'));
 }
