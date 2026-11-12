@@ -33,11 +33,11 @@ async function registration(env:Env,issuer:string,clientId:string):Promise<Regis
 function instructor(claims:Launch):boolean {const roles=claims[roleClaim];return Array.isArray(roles) && roles.some((r:string)=>r===INSTRUCTOR || r===ADMIN || r.endsWith('#Instructor') || r.endsWith('#Administrator'));}
 function contextId(claims:Launch):string {const value=claims[courseClaim]?.id; if(typeof value!=='string' || !value) throw new Error('Missing course context');return value;}
 function resourceId(claims:Launch):string {const value=claims[resourceClaim]?.id; if(typeof value!=='string' || !value) throw new Error('Missing resource link');return value;}
-function cookieHeader(value:string,ttl:number) {return `${cookieName}=${value}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${ttl}`;}
-async function sessionCookie(env:Env,user:string,course:string,deploy:string):Promise<string>{
+function cookieHeader(value:string,ttl:number,site:'None'|'Lax'='None') {return `${cookieName}=${value}; HttpOnly; Secure; SameSite=${site}; Path=/; Max-Age=${ttl}`;}
+async function sessionCookie(env:Env,user:string,course:string,deploy:string,site:'None'|'Lax'='None'):Promise<string>{
   const ttl=Number(env.SESSION_TTL_SECONDS || '14400');const exp=Math.floor(Date.now()/1000)+ttl;
   const data=[user,course,deploy,String(exp)].map(encodeURIComponent).join('|');
-  return cookieHeader(`${encodeURIComponent(data)}.${await hmac(env.SESSION_SECRET,'session',data)}`,ttl);
+  return cookieHeader(`${encodeURIComponent(data)}.${await hmac(env.SESSION_SECRET,'session',data)}`,ttl,site);
 }
 async function readSession(req:Request,env:Env):Promise<{user:string;course:string;deploy:string}|null>{
   const raw=req.headers.get('cookie')?.split(';').map(x=>x.trim()).find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1);
@@ -53,6 +53,26 @@ async function authorize(req:Request,env:Env,course:string,deploy:string) {
   if(!session || session.course!==course || session.deploy!==deploy)return null;
   const verified=await env.DB.prepare('SELECT user_id FROM instructors WHERE deployment_id=? AND course_id=? AND user_id=?').bind(deploy,course,session.user).first();
   return verified ? session : null;
+}
+async function makeInstructorTicket(env:Env,user:string,course:string,deploy:string,nextPath:string):Promise<string> {
+  if(!nextPath.startsWith('/instructor') || nextPath.startsWith('//'))throw new Error('Invalid continuation path');
+  const ticket=urlToken(32),expires=Math.floor(Date.now()/1000)+300;
+  await env.DB.prepare('INSERT INTO instructor_tickets(ticket,deployment_id,course_id,user_id,next_path,expires_at) VALUES(?,?,?,?,?,?)')
+    .bind(ticket,deploy,course,user,nextPath,expires).run();
+  return '/instructor/continue?ticket='+encodeURIComponent(ticket);
+}
+async function continueInstructor(req:Request,env:Env):Promise<Response> {
+  const ticket=new URL(req.url).searchParams.get('ticket')||'';
+  const stored=await env.DB.prepare('SELECT * FROM instructor_tickets WHERE ticket=?')
+    .bind(ticket).first<{deployment_id:string;course_id:string;user_id:string;next_path:string;expires_at:number;consumed_at:number|null}>();
+  const now=Math.floor(Date.now()/1000);
+  if(!stored || stored.consumed_at!==null || stored.expires_at<now)return error(403,'Expired or reused instructor continuation');
+  if(!stored.next_path.startsWith('/instructor') || stored.next_path.startsWith('//'))return error(403,'Invalid continuation');
+  const changed=await env.DB.prepare('UPDATE instructor_tickets SET consumed_at=? WHERE ticket=? AND consumed_at IS NULL AND expires_at>=?')
+    .bind(now,ticket,now).run();
+  if(changed.meta.changes!==1)return error(403,'Instructor continuation already used');
+  const cookie=await sessionCookie(env,stored.user_id,stored.course_id,stored.deployment_id,'Lax');
+  return response('',303,'text/plain',{'Set-Cookie':cookie,'Location':stored.next_path});
 }
 async function login(req:Request,env:Env):Promise<Response>{
   const fields=req.method==='POST'?await parseForm(req):Object.fromEntries(new URL(req.url).searchParams);
@@ -147,13 +167,15 @@ async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration
   const now=new Date().toISOString();
   await env.DB.prepare('INSERT INTO instructors(deployment_id,course_id,user_id,last_verified_at) VALUES(?,?,?,?) ON CONFLICT(deployment_id,course_id,user_id) DO UPDATE SET last_verified_at=excluded.last_verified_at').bind(reg.id,course,user,now).run();
   const cookie=await sessionCookie(env,user,course,reg.id);
-  const challenge=await hmac(env.SESSION_SECRET,'deep',reg.id,course,user,settings.deep_link_return_url);
+  const returnData=typeof settings.data==='string'?settings.data:'';
+  const challenge=await hmac(env.SESSION_SECRET,'deep',reg.id,course,user,settings.deep_link_return_url,returnData);
   const url=new URL(req.url);url.pathname='/instructor/create';
   url.search='';url.searchParams.set('course',course);url.searchParams.set('deployment',reg.id);
   url.searchParams.set('return',settings.deep_link_return_url);
-  url.searchParams.set('data',typeof settings.data==='string'?settings.data:'');
+  url.searchParams.set('data',returnData);
   url.searchParams.set('csrf',challenge);
-  return response(html('Configure a Canvas link',`<p>Continue to the link builder.</p><a href="${escapeHtml(url.toString())}">Create link</a>`),200,'text/html; charset=utf-8',{'Set-Cookie':cookie});
+  const resume=await makeInstructorTicket(env,user,course,reg.id,url.pathname+url.search);
+  return response(html('Configure a Canvas link',`<p>Open the Canvas link builder in a new tab to avoid third-party cookie restrictions.</p><a href="${escapeHtml(resume)}" target="_blank" rel="noopener">Create link</a>`),200,'text/html; charset=utf-8',{'Set-Cookie':cookie});
 }
 async function launch(req:Request,env:Env):Promise<Response>{
   let parsed;
@@ -168,7 +190,9 @@ async function launch(req:Request,env:Env):Promise<Response>{
     if(claims[messageClaim]==='LtiResourceLinkRequest' && getLinkId(claims))return await handleResource(env,claims,reg,token);
     if(!instructor(claims))return error(403,'No configured student resource link');
     const course=contextId(claims);const cookie=await sessionCookie(env,String(claims.sub),course,reg.id);
-    return response(html('Instructor dashboard',`<p><a href="/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(reg.id)}">Open course dashboard</a></p>`),200,'text/html; charset=utf-8',{'Set-Cookie':cookie});
+    const nextPath=`/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(reg.id)}`;
+    const resume=await makeInstructorTicket(env,String(claims.sub),course,reg.id,nextPath);
+    return response(html('Instructor dashboard',`<p>Open the dashboard in a new tab to avoid Canvas iframe cookie restrictions.</p><a href="${escapeHtml(resume)}" target="_blank" rel="noopener">Open course dashboard</a>`),200,'text/html; charset=utf-8',{'Set-Cookie':cookie});
   }catch(e){return error(500,e instanceof Error?e.message:'Unexpected launch error');}
 }
 async function dashboard(req:Request,env:Env):Promise<Response>{
@@ -214,12 +238,14 @@ async function createLink(req:Request,env:Env):Promise<Response>{
   const course=form.course||'',deploy=form.deployment||'';
   const session=await authorize(req,env,course,deploy);if(!session)return error(403,'Instructor access required');
   const returnUrl=form.return||'',data=form.data||'';
-  const expected=returnUrl?await hmac(env.SESSION_SECRET,'deep',deploy,course,session.user,returnUrl):'';
+  const expected=returnUrl?await hmac(env.SESSION_SECRET,'deep',deploy,course,session.user,returnUrl,data):'';
   if(req.method==='POST'){
     const origin=req.headers.get('origin');if(origin && origin!==url.origin)return error(403,'Cross-site request rejected');
-    if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl))return error(403,'Invalid form token');
+    if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data))return error(403,'Invalid form token');
     if(!form.title?.trim()||!form.destination)return error(400,'Title and destination required');
     if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'') || (!env.ENABLE_LOCAL_HTTP&&new URL(form.destination).protocol!=='https:'))return error(400,'Unapproved destination');
+    if(returnUrl && !env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
+    if(returnUrl){const target=new URL(returnUrl);if(target.protocol!=='https:' && !(env.ENABLE_LOCAL_HTTP && ['localhost','127.0.0.1'].includes(target.hostname)))return error(400,'Invalid Deep Linking return URL');}
     const scope=['global','course','activity'].includes(form.scope)?form.scope:'course';const id=randomId();
     await env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString()).run();
     if(returnUrl){
@@ -238,7 +264,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     return response(html('Link saved',`<p>Saved ${escapeHtml(form.title)}. Link ID: <code>${escapeHtml(id)}</code></p><a href="/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}">Dashboard</a>`));
   }
   if(returnUrl&&form.csrf!==expected)return error(403,'Invalid Deep Linking context');
-  const csrf=await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl);
+  const csrf=await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data);
   const checked=(name:string,yes:boolean)=>`<label><input type="checkbox" name="${name}" ${yes?'checked':''}> Forward ${name}</label>`;
   return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
 }
@@ -250,6 +276,7 @@ export default {
       if(path==='/lti/jwks')return env.TOOL_PRIVATE_JWK?response(JSON.stringify({keys:[publicJwk(env.TOOL_PRIVATE_JWK)]}),200,'application/json'):error(503,'Signing key unavailable');
       if(path==='/lti/login'&&['GET','POST'].includes(req.method))return login(req,env);
       if(path==='/lti/launch'&&req.method==='POST')return launch(req,env);
+      if(path==='/instructor/continue'&&req.method==='GET')return continueInstructor(req,env);
       if(path==='/instructor'&&req.method==='GET')return dashboard(req,env);
       if(path==='/instructor/create'&&['GET','POST'].includes(req.method))return createLink(req,env);
       if(path==='/instructor/export'&&req.method==='GET')return exportCsv(req,env);
