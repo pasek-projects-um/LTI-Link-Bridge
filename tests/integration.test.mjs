@@ -20,6 +20,8 @@ async function launch(query, opts = {}) {
   const token = hidden(html, 'id_token');
   const state = opts.stateOverride || hidden(html, 'state');
   const post = await fetch(bridge + '/lti/launch', { method: 'POST', body: new URLSearchParams({ state, id_token: token }), redirect: 'manual' });
+  if (post.status !== 303 && !query.bad && query.kind !== 'dashboard' && query.kind !== 'deep') console.error('LAUNCH RESPONSE', post.status, (await post.clone().text()).slice(0,500));
+  if (post.status !== 200 && !query.bad && (query.kind === 'dashboard' || query.kind === 'deep')) console.error('INSTRUCTOR RESPONSE', post.status, (await post.clone().text()).slice(0,500));
   return { post, token, state, html };
 }
 before(async () => {
