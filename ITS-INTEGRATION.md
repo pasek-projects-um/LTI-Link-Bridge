@@ -9,7 +9,7 @@ LTI Link Bridge brokers Canvas-authenticated launches of instructor-configured a
 - Section membership may now be instructor-managed through an authenticated, course-scoped dashboard, only for subjects established by verified LTI launches. Multiple memberships are stored and manual edits audited. Current Canvas API section lookup is not implemented.
 
 ## Data transmitted to destinations
-Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. An optional destination-side JavaScript helper can send activity events to an endpoint operated by the destination itself; no direct browser event-ingestion API is currently enabled on the Bridge. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
+Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. An optional destination-side JavaScript helper can send activity events to an endpoint operated by the destination itself. The Bridge separately supports an authenticated server-to-server arrival API: destination servers report `opened`, `started`, `submitted`, or `finished` events using per-link 256-bit bearer secrets (stored hashed in D1) that are never forwarded in URLs or browser JavaScript. These callbacks are destination assertions, not independent proof of student completion. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
 
 ## LTI and Canvas permissions
 LTI 1.3 OIDC login, resource launch, and Deep Linking. No Canvas API permissions used in this milestone; future section membership lookup will require separately scoped API authorization and institutional consent.
@@ -26,6 +26,10 @@ Cloudflare Workers + D1, region/account-dependent location. No automated retenti
 - Public tool JWKS: `https://<approved-host>/lti/jwks`
 - Expected LTI 1.3 issuer, client ID, deployment ID, Canvas authorization URL, Canvas JWKS URL and environment (production/test/beta).
 
+## Deep Linking return URL controls
+
+The registration's exact OIDC authentication origin is permitted by default; if the authorized Canvas Deep Linking callback uses a different origin, configure the exact additional origin in `deployments.deep_link_return_origins` before testing. Wildcard return hosts and arbitrary instructor-provided callback origins are rejected. Loopback HTTP is permitted only in explicitly configured local simulation.
+
 ## Keys and configuration
 - `HMAC_KEY_V1`, `SESSION_SECRET`: independent, strong random secrets in Workers Secrets.
 - `TOOL_PRIVATE_JWK`: optional RSA private JWK for Deep Linking; securely stored in Workers Secrets.
@@ -36,10 +40,12 @@ Cloudflare Workers + D1, region/account-dependent location. No automated retenti
 - [x] Implement local test-key Canvas simulator and automated OIDC, replay, launch, Deep Linking and authorization tests (Cloudflare CI).
 - [ ] Extend test suite and perform Canvas browser validation with university test environment.
 - [ ] Resolve third-party cookie behavior under Canvas iframe restrictions.
-- [ ] Validate Canvas placement and protected deep link return destination.
+- [x] Add explicit registered-origin validation for Deep Linking callbacks.
+- [ ] Validate Canvas placement and actual institutional return URL with ITS.
 - [ ] Verify course and instructor access isolation under adversarial scenarios.
 - [x] Implement cursor-streamed complete CSV exports, CSV formula neutralization and identity-export audits.
 - [ ] Load-test institutional-scale exports and confirm institution-approved audit retention.
+- [ ] Review who can generate and hold per-link destination callback credentials, server-to-server arrival event reliability, retention and incident response.
 - [ ] Review FERPA classification, institutional vendor agreement, data residency, retention, breach reporting and incident response.
 - [ ] Conduct dependency/security assessment and network testing.
 - [ ] Register in institutional test Canvas and validate without production student data.

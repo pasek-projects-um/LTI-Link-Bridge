@@ -219,8 +219,8 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   if(since){where.push('l.event_time>=?');values.push(since);}
   if(until){where.push('l.event_time<=?');values.push(until);}
   const clause=where.join(' AND ');
-  const counts=await env.DB.prepare(`SELECT COUNT(*) AS total,COUNT(DISTINCT user_code) AS students,COUNT(DISTINCT link_id) AS links,MIN(event_time) AS first_launch,MAX(event_time) AS last_launch FROM launches l WHERE ${clause}`).bind(...values).first<Record<string,unknown>>();
-  const rows=await env.DB.prepare(`SELECT l.id,l.event_time,l.user_code,l.link_id,links.title,l.section_code,l.redirect_status FROM launches l JOIN links ON links.id=l.link_id WHERE ${clause} ORDER BY l.event_time DESC LIMIT 100 OFFSET ?`).bind(...values,(page-1)*100).all<Record<string,unknown>>();
+  const counts=await env.DB.prepare(`SELECT COUNT(*) AS total,COUNT(DISTINCT user_code) AS students,COUNT(DISTINCT link_id) AS links,MIN(event_time) AS first_launch,MAX(event_time) AS last_launch, SUM(CASE WHEN EXISTS (SELECT 1 FROM arrival_events ae WHERE ae.launch_id=l.id AND ae.event_type='opened') THEN 1 ELSE 0 END) AS confirmed_arrivals FROM launches l WHERE ${clause}`).bind(...values).first<Record<string,unknown>>();
+  const rows=await env.DB.prepare(`SELECT l.id,l.event_time,l.user_code,l.link_id,links.title,l.section_code,l.redirect_status,(SELECT MIN(ae.received_at) FROM arrival_events ae WHERE ae.launch_id=l.id AND ae.event_type='opened') AS destination_opened_at FROM launches l JOIN links ON links.id=l.link_id WHERE ${clause} ORDER BY l.event_time DESC LIMIT 100 OFFSET ?`).bind(...values,(page-1)*100).all<Record<string,unknown>>();
   const links=await env.DB.prepare('SELECT id,title FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at DESC').bind(deploy,course).all<{id:string;title:string}>();
   const byDay=await env.DB.prepare('SELECT substr(l.event_time,1,10) AS day,COUNT(*) AS total FROM launches l WHERE '+clause+' GROUP BY substr(l.event_time,1,10) ORDER BY day DESC LIMIT 30').bind(...values).all<{day:string;total:number}>();
   const byActivity=await env.DB.prepare('SELECT l.link_id,links.title,COUNT(*) AS total,COUNT(DISTINCT l.user_code) AS students FROM launches l JOIN links ON links.id=l.link_id WHERE '+clause+' GROUP BY l.link_id,links.title ORDER BY total DESC,links.title LIMIT 100').bind(...values).all<{link_id:string;title:string;total:number;students:number}>();
@@ -228,7 +228,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
 
   const base=`course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}`;
   const linkOptions=links.results.map(l=>`<option value="${escapeHtml(l.id)}" ${filterLink===l.id?'selected':''}>${escapeHtml(l.title)}</option>`).join('');
-  const tbody=rows.results.map(r=>`<tr><td>${escapeHtml(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td></tr>`).join('');
+  const tbody=rows.results.map(r=>`<tr><td>${escapeHtml(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td><td>${r.destination_opened_at?escapeHtml(r.destination_opened_at):'Not confirmed'}</td></tr>`).join('');
   const summaryByDay=byDay.results.map(r=>'<tr><td>'+escapeHtml(r.day)+'</td><td>'+escapeHtml(r.total)+'</td></tr>').join('');
   const summaryByActivity=byActivity.results.map(r=>'<tr><td><a href="/instructor?'+base+'&link='+encodeURIComponent(r.link_id)+'">'+escapeHtml(r.title)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.students)+'</td></tr>').join('');
   const summaryByStudent=byStudent.results.map(r=>'<tr><td><a href="/instructor?'+base+'&user='+encodeURIComponent(r.user_code)+'">'+escapeHtml(r.user_code)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.activities)+'</td><td>'+escapeHtml(r.last_launch)+'</td></tr>').join('');
@@ -237,9 +237,10 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
     '<section><h2>Student summary</h2><table><tr><th>Pseudonymous user</th><th>Launches</th><th>Activities</th><th>Last launch (UTC)</th></tr>'+summaryByStudent+'</table><small>Top 100 students by launch count; filter the student code to view the complete history.</small></section>';
 
   const filter=`<form method="get"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><label>Activity <select name="link"><option value="">All</option>${linkOptions}</select></label><label>Student code <input name="user" value="${escapeHtml(filterUser)}"></label><label>From UTC <input name="since" placeholder="2026-01-01T00:00:00Z" value="${escapeHtml(since)}"></label><label>Until UTC <input name="until" placeholder="2026-12-31T23:59:59Z" value="${escapeHtml(until)}"></label><button>Filter</button></form>`;
-  const exports=`<p><a href="/instructor/export?${base}&type=launches">Export all launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
+  const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
+  const exports=`<p><a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -254,7 +255,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
   const since=url.searchParams.get('since')||'',until=url.searchParams.get('until')||'';
   const columns=identities
     ? ['user_id','full_name','email','user_code','scope','link_id','key_version','section_ids','first_seen','last_seen']
-    : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version'];
+    : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version','destination_opened_at'];
   if(identities){
     const auditDetails=JSON.stringify({scope:'identity_mapping',link:link||null,user:user||null});
     await env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)')
@@ -285,7 +286,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
           if(since){where.push('event_time>=?');values.push(since);}
           if(until){where.push('event_time<=?');values.push(until);}
           if(lastTime){where.push('(event_time>? OR (event_time=? AND id>?))');values.push(lastTime,lastTime,lastId);}
-          query='SELECT '+columns.join(',')+' FROM launches WHERE '+where.join(' AND ')+' ORDER BY event_time,id LIMIT 400';
+          query='SELECT '+columns.map(c=>c==='destination_opened_at'?"(SELECT MIN(ae.received_at) FROM arrival_events ae WHERE ae.launch_id=launches.id AND ae.event_type='opened') AS destination_opened_at":c).join(',')+' FROM launches WHERE '+where.join(' AND ')+' ORDER BY event_time,id LIMIT 400';
         }
         const rows=(await env.DB.prepare(query).bind(...values).all<Record<string,unknown>>()).results;
         if(rows.length===0){finished=true;controller.close();return;}
@@ -355,6 +356,90 @@ async function manageSections(req:Request,env:Env):Promise<Response>{
     form+'<h2>Observed students and sections</h2><table><tr><th>Canvas user ID</th><th>Name</th><th>Section IDs</th></tr>'+rows+'</table>'+
     '<p>Showing up to 500 observed students. This interface never exposes mappings to students or destination websites.</p>'));
 }
+// Optional server-to-server destination arrival reporting. The random 256-bit
+// bearer credential is shown only once to a verified instructor. Never send it
+// to browsers or append it to launch URLs.
+const arrivalTypes=new Set(['opened','started','submitted','finished']);
+async function receiveArrival(req:Request,env:Env):Promise<Response>{
+  const auth=req.headers.get('Authorization')||'';
+  if(!/^Bearer [A-Za-z0-9_-]{40,128}$/.test(auth))return error(401,'Destination credential required');
+  const length=Number(req.headers.get('Content-Length')||0);
+  if(length>4096)return error(413,'Arrival event too large');
+  let payload:Record<string,unknown>;
+  try {
+    const raw=await req.text();if(raw.length>4096)return error(413,'Arrival event too large');
+    payload=JSON.parse(raw);
+    if(!payload||Array.isArray(payload)||typeof payload!=='object')throw new Error('Invalid payload');
+  }catch{return error(400,'Invalid arrival event');}
+  const link=payload.link,launch=payload.launch,event=payload.event,nonce=payload.nonce,observed=payload.observed_at;
+  if(typeof link!=='string'||!/^[-a-zA-Z0-9]{1,80}$/.test(link)||
+     typeof launch!=='string'||!/^[0-9a-f-]{36}$/i.test(launch)||
+     typeof event!=='string'||!arrivalTypes.has(event)||
+     typeof nonce!=='string'||!/^[A-Za-z0-9_-]{22,128}$/.test(nonce)||
+     typeof observed!=='string')return error(400,'Invalid arrival fields');
+  const observedTime=Date.parse(observed);
+  if(!Number.isFinite(observedTime)||Math.abs(Date.now()-observedTime)>300000)return error(400,'Arrival timestamp outside accepted window');
+  const token=auth.slice(7);
+  const secretHash=await fingerprint(token);
+  const key=await env.DB.prepare('SELECT link_id FROM arrival_credentials WHERE link_id=? AND token_hash=?')
+    .bind(link,secretHash).first();
+  if(!key)return error(401,'Invalid destination credential');
+  const linked=await env.DB.prepare('SELECT id,event_time FROM launches WHERE id=? AND link_id=?')
+    .bind(launch,link).first<{id:string;event_time:string}>();
+  if(!linked || observedTime<Date.parse(linked.event_time)-300000 ||
+     observedTime>Date.parse(linked.event_time)+48*60*60*1000)return error(403,'Launch is not eligible for arrival confirmation');
+  const now=new Date().toISOString();
+  try {
+    const result=await env.DB.prepare('INSERT INTO arrival_events(id,launch_id,link_id,event_type,observed_at,received_at,nonce) VALUES(?,?,?,?,?,?,?)')
+      .bind(randomId(),launch,link,event,observed,now,nonce).run();
+    if(!result.success)return error(503,'Arrival event could not be recorded');
+  }catch(e){
+    if(e instanceof Error && /UNIQUE|constraint/i.test(e.message))return error(409,'Repeated destination event');
+    return error(503,'Arrival event could not be recorded');
+  }
+  return response(JSON.stringify({recorded:true}),201,'application/json');
+}
+async function manageArrivalKeys(req:Request,env:Env):Promise<Response>{
+  const url=new URL(req.url),fields=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
+  const course=fields.course||'',deploy=fields.deployment||'';
+  const session=await authorize(req,env,course,deploy);
+  if(!session)return error(403,'Verified instructor access required');
+  const csrf=await hmac(env.SESSION_SECRET,'arrival-admin',deploy,course,session.user);
+  if(req.method==='POST'){
+    const origin=req.headers.get('Origin');
+    if(origin&&origin!==url.origin)return error(403,'Cross-origin key operation refused');
+    if(fields.csrf!==csrf||fields.action!=='rotate')return error(403,'Invalid credential management request');
+    const link=await env.DB.prepare('SELECT id,title FROM links WHERE id=? AND course_id=? AND deployment_id=?')
+      .bind(fields.link_id||'',course,deploy).first<{id:string;title:string}>();
+    if(!link)return error(404,'Link does not belong to this course');
+    const key=urlToken(32),hashed=await fingerprint(key),at=new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO arrival_credentials(link_id,token_hash,created_at,updated_at,issued_by) VALUES(?,?,?,?,?) ON CONFLICT(link_id) DO UPDATE SET token_hash=excluded.token_hash,updated_at=excluded.updated_at,issued_by=excluded.issued_by')
+        .bind(link.id,hashed,at,at,session.user),
+      env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)')
+        .bind(randomId(),at,deploy,course,session.user,'destination_key_rotation',link.id)
+    ]);
+    return response(html('Destination callback credential',
+      '<p>This credential is shown <strong>only once</strong>. Save it as a secret on the destination server. Never place it in browser JavaScript, Canvas, a URL, or your GitHub repository.</p>'+
+      '<p>Activity: '+escapeHtml(link.title)+'</p><p>Link ID: <code>'+escapeHtml(link.id)+'</code></p>'+
+      '<p>Bearer token: <code id="callback-token">'+escapeHtml(key)+'</code></p>'+
+      '<p>Send an authenticated HTTPS POST to <code>/api/arrival</code> with JSON fields <code>link</code>, <code>launch</code>, <code>event</code>, <code>nonce</code> and <code>observed_at</code>. Include <code>Authorization: Bearer &lt;token&gt;</code>.</p>'+
+      '<p><a href="/instructor/arrival?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)+'">Back to callback settings</a></p>'));
+  }
+  const rows=await env.DB.prepare('SELECT l.id,l.title,c.updated_at FROM links l LEFT JOIN arrival_credentials c ON c.link_id=l.id WHERE l.course_id=? AND l.deployment_id=? ORDER BY l.title')
+    .bind(course,deploy).all<{id:string;title:string;updated_at:string|null}>();
+  const options=rows.results.map(r=>'<option value="'+escapeHtml(r.id)+'">'+escapeHtml(r.title)+'</option>').join('');
+  const tableRows=rows.results.map(r=>'<tr><td>'+escapeHtml(r.title)+'</td><td>'+escapeHtml(r.updated_at||'Not configured')+'</td></tr>').join('');
+  return response(html('Destination arrival callbacks',
+    '<p><a href="/instructor?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)+'">Dashboard</a></p>'+
+    '<p>Optional: a destination server can explicitly report page arrivals and activity events. Redirects alone do not prove arrival. Rotate the secret if a destination server is compromised; previous credentials become invalid.</p>'+
+    '<form method="post"><input type="hidden" name="course" value="'+escapeHtml(course)+'">'+
+    '<input type="hidden" name="deployment" value="'+escapeHtml(deploy)+'">'+
+    '<input type="hidden" name="csrf" value="'+csrf+'">'+
+    '<label>Activity <select name="link_id">'+options+'</select></label>'+
+    '<button name="action" value="rotate">Generate / rotate callback credential</button></form>'+
+    '<table><tr><th>Activity</th><th>Last credential rotation (UTC)</th></tr>'+tableRows+'</table>'));
+}
 async function createLink(req:Request,env:Env):Promise<Response>{
   const url=new URL(req.url),form=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
   const course=form.course||'',deploy=form.deployment||'';
@@ -405,6 +490,8 @@ export default {
       if(path==='/instructor'&&req.method==='GET')return dashboard(req,env);
       if(path==='/instructor/sections'&&['GET','POST'].includes(req.method))return manageSections(req,env);
       if(path==='/instructor/create'&&['GET','POST'].includes(req.method))return createLink(req,env);
+      if(path==='/instructor/arrival'&&['GET','POST'].includes(req.method))return manageArrivalKeys(req,env);
+      if(path==='/api/arrival'&&req.method==='POST')return receiveArrival(req,env);
       if(path==='/instructor/export'&&req.method==='GET')return exportCsv(req,env);
       if(path==='/')return response(html('LTI Link Bridge','<p>Launch from your learning management system to access this tool.</p>'));
       return error(404,'Not found');

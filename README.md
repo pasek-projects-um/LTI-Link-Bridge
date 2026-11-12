@@ -12,7 +12,7 @@ A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to i
 
 ## Important current limitations
 
-This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
+This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation without a trusted server-side integration, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
 
 ## Install and local start
 
@@ -85,6 +85,24 @@ await tracker.activityFinished();
 
 The destination's endpoint must implement its own authorization, retention and analytics. The helper **does not report events to the Bridge** or confirm arrival unless a trusted server-side integration is added. Pseudonyms and launch UUIDs are correlation values, never authentication credentials. Do not include personal data in arbitrary event metadata.
 
+## Destination-side arrival confirmation (optional)
+
+By default the bridge records only that the redirect was **issued**, not that a browser actually loaded the external website. For cooperative destinations, a verified course instructor can open **Arrival callbacks** in the dashboard and generate a 256-bit, per-link bearer credential. Its SHA-256 hash is stored in D1; the raw credential is shown once and must live exclusively in the destination server's secret store.
+
+After receiving a student page request, the destination **server** (never browser JavaScript) may POST JSON to `https://<bridge-host>/api/arrival` with the header `Authorization: Bearer <per-link-secret>` and `Content-Type: application/json`:
+
+~~~json
+{"link":"<configured-link-id>","launch":"<launch-uuid>","event":"opened","nonce":"<fresh-at-least-128-bit-random-URL-safe-value>","observed_at":"2026-11-12T21:00:00.000Z"}
+~~~
+
+Events may be `opened`, `started`, `submitted`, or `finished`. The server checks the credential against that link, requires an existing launch, accepts timestamps within five minutes of server receipt and at most 48 hours after the original launch, and rejects reused nonces (HTTP 409). It records distinct immutable arrival events without converting `redirect_status=issued` into an unsupported claim about browser success. The instructor dashboard and launch CSV distinguish confirmed destination reports from unconfirmed redirects. `observed_at` is the destination's statement; it is not cryptographically attested independent evidence of browser activity. Rotate the credential if compromised; previous tokens stop working.
+
+**Security:** launch UUIDs and pseudonymous URL codes are not credentials. Never put the bearer token in the student's query string, frontend JavaScript, HTML, or repository. Only the external destination's trusted server should make arrival API calls. The Bridge intentionally does not allow cross-origin browser calls.
+
+## Platform-approved Deep Linking return URLs
+
+A signed LTI Deep Linking request is additionally restricted to return to the registered platform authentication origin or an exact explicitly configured origin in the deployment's `deep_link_return_origins` field (comma-separated, origin-only). Unrelated HTTPS sites and callback URLs containing credentials/fragments are rejected before creating an instructor session. This protects against forwarding a signed Deep Linking response to an arbitrary external site. The local Canvas simulator uses the loopback platform origin. Configure authorized non-authentication Canvas return origins explicitly with ITS rather than permitting wildcard domains.
+
 ## Remaining work before ITS review
 
-Extend coverage of issuer/deployment edge cases, harden Deep Linking return URL registration, prohibit loopback URLs in production, add Canvas API section lookup, destination arrival callbacks, configurable user-identifier key rotation, retention/purge workflows, stronger audit controls, accessibility review and production deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.
+Extend coverage of issuer/deployment edge cases, harden Deep Linking return URL registration, prohibit loopback URLs in production, add Canvas API section lookup, external-destination callback deployment integration, configurable user-identifier key rotation, retention/purge workflows, stronger audit controls, accessibility review and production deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.
