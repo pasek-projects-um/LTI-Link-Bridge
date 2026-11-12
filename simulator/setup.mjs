@@ -26,6 +26,7 @@ const vars = [
   'TOOL_PRIVATE_JWK=' + JSON.stringify(tool.privateJwk),
   'ENABLE_LOCAL_HTTP=1',
   'DESTINATION_ALLOWLIST=localhost,127.0.0.1',
+  'CANVAS_API_TOKENS='+JSON.stringify({'sim-1':'simulator-canvas-api-token'}),
   'RETENTION_ENABLED=1',
   'RETENTION_LAUNCH_DAYS=90',
   'RETENTION_IDENTITY_DAYS=180',
@@ -37,6 +38,7 @@ const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
 const bootstrap = [
   "INSERT OR IGNORE INTO deployments(id,institution,issuer,client_id,deployment_id,auth_url,jwks_url) VALUES('sim-1','sim-university','http://localhost:8788','bridge-simulator','sim-deployment','http://localhost:8788/authorize','http://localhost:8788/jwks');",
   "INSERT OR IGNORE INTO deployments(id,institution,issuer,client_id,deployment_id,auth_url,jwks_url) VALUES('sim-2','sim-university','http://localhost:8788','bridge-simulator','second-deployment','http://localhost:8788/authorize','http://localhost:8788/jwks');",
+  "UPDATE deployments SET canvas_api_origin='http://localhost:8788' WHERE id='sim-1';",
   "INSERT OR IGNORE INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES('sim-activity-a','sim-1','course-a','Simulation Activity A','http://localhost:8788/activity?keep=yes#test','course',1,1,1,1,1,0,'teacher-1','" + now + "');",
   "INSERT OR IGNORE INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES('sim-activity-b','sim-1','course-a','Simulation Activity B','http://localhost:8788/activity','activity',1,1,0,1,1,0,'teacher-1','" + now + "');",
   "INSERT OR IGNORE INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES('sim-activity-c','sim-1','course-b','Course B Activity','http://localhost:8788/activity','course',1,1,0,1,1,0,'teacher-2','" + now + "');",

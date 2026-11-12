@@ -331,3 +331,35 @@ test('scheduled retention removes aged activity and mapping records while preser
   assert.match(afterIdentities,/student-1/);
   assert.equal((await fetch(bridge+'/health')).status,200);
 });
+
+test('Canvas enrollment API resolves verified student sections, sorts multiple memberships, and excludes unrelated enrollments',async()=>{
+  const single=await launch({user:'api-1',link:'sim-activity-a'});
+  assert.equal(single.post.status,303);
+  const first=new URL(single.post.headers.get('location')).searchParams.get('section');
+  assert.match(first,/^S_[A-Za-z0-9_-]+$/);
+  const multi=await launch({user:'api-multi',link:'sim-activity-a'});
+  assert.equal(multi.post.status,303);
+  const multiSection=new URL(multi.post.headers.get('location')).searchParams.get('section');
+  assert.match(multiSection,/^S_[A-Za-z0-9_-]+$/);
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const sections=await fetch(bridge+'/instructor/sections?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  assert.equal(sections.status,200);
+  const html=await sections.text();
+  assert.match(html,/api-1/);
+  assert.match(html,/section-api/);
+  assert.match(html,/api-multi/);
+  assert.match(html,/section-a/);
+  assert.match(html,/section-z/);
+  assert.doesNotMatch(html,/unrelated-section/);
+  const again=await launch({user:'api-multi',link:'sim-activity-a'});
+  assert.equal(again.post.status,303);
+  assert.equal(new URL(again.post.headers.get('location')).searchParams.get('section'),multiSection);
+});
+test('Canvas API errors and redirects fail safely without preventing an optional-section launch',async()=>{
+  for(const user of ['api-down','api-redirect','api-empty']){
+    const result=await launch({user,link:'sim-activity-a'});
+    assert.equal(result.post.status,303);
+    assert.equal(new URL(result.post.headers.get('location')).searchParams.get('section'),null);
+  }
+});

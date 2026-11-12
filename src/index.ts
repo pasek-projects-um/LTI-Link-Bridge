@@ -3,14 +3,15 @@ import { buildDestination, allowedDestination, escapeHtml } from './links.ts';
 import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
 import { runRetention } from './retention.ts';
 import { dashboardScript } from './dashboard-script.ts';
+import { lookupCanvasSections } from './canvas.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
   TOOL_PRIVATE_JWK?: string; PUBLIC_BASE_URL: string; SESSION_TTL_SECONDS?: string;
-  DESTINATION_ALLOWLIST?: string; ENABLE_LOCAL_HTTP?: string;
+  DESTINATION_ALLOWLIST?: string; ENABLE_LOCAL_HTTP?: string; CANVAS_API_TOKENS?: string;
   RETENTION_ENABLED?: string; RETENTION_LAUNCH_DAYS?: string; RETENTION_IDENTITY_DAYS?: string; RETENTION_AUDIT_DAYS?: string;
 }
-type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null};
+type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null;canvas_api_origin?:string|null};
 type Launch = Record<string,any>;
 const courseClaim = LTI + 'context';
 const resourceClaim = LTI + 'resource_link';
@@ -148,6 +149,25 @@ function getLinkId(claims:Launch):string | null {
   const custom=claims[LTI+'custom'];
   return typeof custom?.bridge_link_id==='string' ? custom.bridge_link_id : null;
 }
+async function refreshCanvasMembership(env:Env,reg:Registration,course:string,user:string):Promise<{source:'canvas'|'fallback'|'unconfigured';sections:string[];error?:string}>{
+  if(!reg.canvas_api_origin)return {source:'unconfigured',sections:[]};
+  try{
+    const sections=await lookupCanvasSections(reg,course,user,env);
+    if(sections===null)return {source:'unconfigured',sections:[]};
+    // A successful authoritative response replaces only Canvas-managed mappings.
+    // Instructor overrides remain untouched, and can coexist with Canvas sections.
+    const at=new Date().toISOString();
+    const statements=[
+      env.DB.prepare("DELETE FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? AND source='canvas'").bind(reg.id,course,user),
+      ...sections.map(id=>env.DB.prepare("INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES(?,?,?,?,'canvas')").bind(reg.id,course,user,id))
+    ];
+    await env.DB.batch(statements);
+    return {source:'canvas',sections};
+  }catch{
+    // Never expose bearer tokens, URLs or API response bodies to students.
+    return {source:'fallback',sections:[],error:'Canvas section lookup unavailable'};
+  }
+}
 async function handleResource(env:Env,claims:Launch,reg:Registration,token:string):Promise<Response>{
   const course=contextId(claims),resource=resourceId(claims),user=String(claims.sub);
   const configured=getLinkId(claims);
@@ -165,9 +185,10 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   const courseCode=await pseudonym(secret,'C',version,...base,course);
   const userParts=link.user_scope==='global'?[user]:link.user_scope==='activity'?[course,link.id,user]:[course,user];
   const userCode=await pseudonym(secret,'U',version,...base,link.user_scope,...userParts);
-  const membership=await env.DB.prepare('SELECT section_id FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? ORDER BY section_id LIMIT 1').bind(reg.id,course,user).first<{section_id:string}>();
+  if(link.forward_section || link.section_required)await refreshCanvasMembership(env,reg,course,user);
+  const membership=await env.DB.prepare("SELECT section_id FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? ORDER BY CASE source WHEN 'instructor' THEN 0 ELSE 1 END, section_id LIMIT 1").bind(reg.id,course,user).first<{section_id:string}>();
   const sectionCode=membership?await pseudonym(secret,'S',version,...base,membership.section_id):null;
-  if(link.forward_section && link.section_required && !sectionCode)return error(409,'Section membership unresolved');
+  if(link.section_required && !sectionCode)return error(409,'Section membership unresolved');
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
   const target=buildDestination(link.destination,{
     user:link.forward_user?userCode:undefined,course:link.forward_course?courseCode:undefined,
@@ -372,7 +393,7 @@ async function manageSections(req:Request,env:Env):Promise<Response>{
     '<button name="action" value="add">Add membership</button> <button name="action" value="remove">Remove instructor mapping</button></form>';
   return response(html('Instructor section mappings',
     '<p><a href="/instructor?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)+'">Back to dashboard</a></p>'+
-    '<p>Students must first launch an activity before section mapping. Multiple section memberships are supported. This manual mapping has not been verified against the Canvas API. The default forwarding policy selects the lexicographically first mapped section ID.</p>'+
+    '<p>Students must first launch an activity before section mapping. Multiple section memberships are supported. This manual mapping has not been verified against the Canvas API. An instructor-entered section takes precedence; otherwise the first lexicographically sorted Canvas section is used. Canvas API memberships are refreshed during section-enabled launches when the institution has configured an API token; on API failure, existing mappings remain available.</p>'+
     form+'<h2>Observed students and sections</h2><table><tr><th>Canvas user ID</th><th>Name</th><th>Section IDs</th></tr>'+rows+'</table>'+
     '<p>Showing up to 500 observed students. This interface never exposes mappings to students or destination websites.</p>'));
 }

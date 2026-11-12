@@ -11,3 +11,5 @@ TOOL_PRIVATE_JWK=REPLACE_WITH_RSA_PRIVATE_JWK_JSON
 # RETENTION_LAUNCH_DAYS=90
 # RETENTION_IDENTITY_DAYS=180
 # RETENTION_AUDIT_DAYS=365
+# Optional Canvas API credentials: provision as a Worker Secret, NOT as a checked-in file.
+# CANVAS_API_TOKENS={"deployment-1":"<institution-managed-token>"}

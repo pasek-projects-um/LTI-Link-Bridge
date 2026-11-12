@@ -73,6 +73,17 @@ async function makeToken(query) {
 const app = createServer(async (req, res) => {
   const url = new URL(req.url, issuer);
   try {
+    if (url.pathname.match(/^\/api\/v1\/courses\/[^/]+\/enrollments$/)) {
+      if (req.headers.authorization !== 'Bearer simulator-canvas-api-token') return send(res,401,'Unauthorized');
+      const course=url.pathname.split('/')[4],user=url.searchParams.get('user_id');
+      if (user==='api-down') return send(res,503,'Canvas temporarily unavailable');
+      if (user==='api-redirect') return send(res,302,'',{Location:'http://localhost:9999/stolen'});
+      const sectionIds=user==='api-multi'?['section-z','section-a']:user==='api-empty'?[]:user==='api-1'?['section-api']:[];
+      const rows=sectionIds.map((id,i)=>({id:i+1,user_id:user,course_id:course,course_section_id:id,enrollment_state:'active'}));
+      // Deliberate irrelevant enrollment must not be included in the result.
+      rows.push({id:999,user_id:'different-user',course_id:course,course_section_id:'unrelated-section',enrollment_state:'active'});
+      return send(res,200,JSON.stringify(rows),{'Content-Type':'application/json'});
+    }
     if (url.pathname === '/health') return send(res, 200, JSON.stringify({ ok: true }), { 'Content-Type': 'application/json' });
     if (url.pathname === '/jwks') return send(res, 200, JSON.stringify({ keys: [keys.platform.publicJwk] }), { 'Content-Type': 'application/json' });
     if (url.pathname === '/start') {

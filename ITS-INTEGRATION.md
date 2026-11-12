@@ -30,6 +30,12 @@ Cloudflare Workers + D1, region/account-dependent location. The instructor dashb
 
 The registration's exact OIDC authentication origin is permitted by default; if the authorized Canvas Deep Linking callback uses a different origin, configure the exact additional origin in `deployments.deep_link_return_origins` before testing. Wildcard return hosts and arbitrary instructor-provided callback origins are rejected. Loopback HTTP is permitted only in explicitly configured local simulation.
 
+## Canvas enrollment API integration
+
+Optional per-deployment Canvas section lookup is implemented but not yet validated against a real Canvas instance. ITS should set `deployments.canvas_api_origin` to the exact trusted Canvas origin and provision `CANVAS_API_TOKENS` as a Worker Secret containing a JSON object mapping internal deployment IDs to separate Canvas bearer credentials. No token is sent to students or destination websites. Confirm that `GET /api/v1/courses/{course_id}/enrollments?user_id={user_id}&type[]=StudentEnrollment` is available with the approved account permissions and that LTI context/user IDs correspond to Canvas REST IDs. No wildcard API hosts, redirects, or arbitrary API origins are permitted.
+
+API results are filtered to the exact user/course, active/invited enrollments and valid section IDs. All memberships are stored; instructor overrides take precedence. A failed lookup retains existing mappings, while section-required links fail if no verified or manual mapping is known. Use a least-privilege account/token, credential rotation, and institutional access review.
+
 ## Keys and configuration
 - `HMAC_KEY_V1`, `SESSION_SECRET`: independent, strong random secrets in Workers Secrets.
 - Optional `HMAC_KEY_V2` and `HMAC_ACTIVE_VERSION=v2` for an explicit versioned key transition. Existing courses keep their previous link key versions; preserve old secrets while those links remain active and coordinate any global identifier discontinuity with institutional policy.
@@ -43,6 +49,7 @@ The registration's exact OIDC authentication origin is permitted by default; if 
 - [ ] Resolve third-party cookie behavior under Canvas iframe restrictions.
 - [x] Add explicit registered-origin validation for Deep Linking callbacks.
 - [ ] Validate Canvas placement and actual institutional return URL with ITS.
+- [ ] Obtain ITS-approved, least-privilege Canvas API credential and validate section enrollment query, pagination, API IDs and revocation.
 - [ ] Verify course and instructor access isolation under adversarial scenarios.
 - [x] Implement cursor-streamed complete CSV exports, CSV formula neutralization and identity-export audits.
 - [ ] Load-test institutional-scale exports and confirm institution-approved audit retention.
