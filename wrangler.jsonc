@@ -1,0 +1,16 @@
+{
+  "name": "lti-link-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bridge", "database_id": "REPLACE_WITH_CLOUDFLARE_D1_DATABASE_ID", "migrations_dir": "migrations" }
+  ],
+  "vars": {
+    "BASE_URL": "http://localhost:8787",
+    "ISSUER": "http://localhost:8787/simulator",
+    "CLIENT_ID": "local-client",
+    "DEPLOYMENT_ID": "local-deployment",
+    "CANVAS_JWKS_URL": "http://localhost:8787/simulator/jwks"
+  }
+}
