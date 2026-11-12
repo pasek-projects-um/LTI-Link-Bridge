@@ -1,12 +1,13 @@
 import { LTI, INSTRUCTOR, ADMIN, randomId, urlToken, pseudonym, fingerprint, verifyPlatformJwt, signDeepLink, publicJwk, hmac } from './crypto.ts';
 import { buildDestination, allowedDestination, escapeHtml } from './links.ts';
+import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; SESSION_SECRET: string;
   TOOL_PRIVATE_JWK?: string; PUBLIC_BASE_URL: string; SESSION_TTL_SECONDS?: string;
   DESTINATION_ALLOWLIST?: string; ENABLE_LOCAL_HTTP?: string;
 }
-type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string};
+type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null};
 type Launch = Record<string,any>;
 const courseClaim = LTI + 'context';
 const resourceClaim = LTI + 'resource_link';
@@ -40,19 +41,25 @@ async function sessionCookie(env:Env,user:string,course:string,deploy:string,sit
   return cookieHeader(`${encodeURIComponent(data)}.${await hmac(env.SESSION_SECRET,'session',data)}`,ttl,site);
 }
 async function readSession(req:Request,env:Env):Promise<{user:string;course:string;deploy:string}|null>{
+  try {
   const raw=req.headers.get('cookie')?.split(';').map(x=>x.trim()).find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1);
+  if(raw && raw.length>2048)return null;
   if(!raw)return null;const last=raw.lastIndexOf('.');if(last<0)return null;
   const data=decodeURIComponent(raw.slice(0,last));const signature=raw.slice(last+1);
   if(signature!==await hmac(env.SESSION_SECRET,'session',data))return null;
   const [user,course,deploy,exp]=data.split('|').map(decodeURIComponent);
   if(!user||!course||!deploy||Number(exp)<Date.now()/1000)return null;
   return {user,course,deploy};
+  }catch{return null;}
 }
 async function authorize(req:Request,env:Env,course:string,deploy:string) {
   const session=await readSession(req,env);
   if(!session || session.course!==course || session.deploy!==deploy)return null;
   const verified=await env.DB.prepare('SELECT user_id FROM instructors WHERE deployment_id=? AND course_id=? AND user_id=?').bind(deploy,course,session.user).first();
-  return verified ? session : null;
+  if(!verified)return null;
+  const recent=await env.DB.prepare('SELECT last_verified_at FROM instructors WHERE deployment_id=? AND course_id=? AND user_id=?').bind(deploy,course,session.user).first<{last_verified_at:string}>();
+  const ttl=Math.max(300,Math.min(14400,Number(env.SESSION_TTL_SECONDS||'14400')));
+  return recent && Date.parse(recent.last_verified_at)>=Date.now()-ttl*1000 ? session:null;
 }
 async function makeInstructorTicket(env:Env,user:string,course:string,deploy:string,nextPath:string):Promise<string> {
   if(!nextPath.startsWith('/instructor') || nextPath.startsWith('//'))throw new Error('Invalid continuation path');
@@ -131,8 +138,8 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   const bound=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?').bind(reg.id,course,resource).first<{link_id:string}>();
   if(bound && bound.link_id!==link.id)return error(403,'Conflicting resource binding');
   if(!bound)await env.DB.prepare('INSERT OR IGNORE INTO link_resources(deployment_id,course_id,resource_link_id,link_id) VALUES(?,?,?,?)').bind(reg.id,course,resource,link.id).run();
-  if(!allowedDestination(link.destination,env.DESTINATION_ALLOWLIST||''))return error(403,'Destination domain is not approved');
-  if(!env.ENABLE_LOCAL_HTTP && new URL(link.destination).protocol!=='https:')return error(403,'HTTP destinations disabled');
+  if(!allowedDestination(link.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(403,'Destination domain is not approved');
+  if(!isLocalDevelopment(env) && new URL(link.destination).protocol!=='https:')return error(403,'HTTP destinations disabled');
   const version='v1';const secret=env.HMAC_KEY_V1;
   const base=[reg.institution,reg.issuer,reg.client_id,reg.deployment_id];
   const courseCode=await pseudonym(secret,'C',version,...base,course);
@@ -164,6 +171,7 @@ async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration
   if(!instructor(claims))return error(403,'Instructor role required');
   const course=contextId(claims),user=String(claims.sub),settings=claims[deepClaim];
   if(!settings || typeof settings.deep_link_return_url!=='string')return error(400,'Missing deep linking settings');
+  try{validatedDeepLinkReturn(settings.deep_link_return_url,reg,env);}catch{return error(403,'Platform Deep Linking return URL is not registered');}
   const now=new Date().toISOString();
   await env.DB.prepare('INSERT INTO instructors(deployment_id,course_id,user_id,last_verified_at) VALUES(?,?,?,?) ON CONFLICT(deployment_id,course_id,user_id) DO UPDATE SET last_verified_at=excluded.last_verified_at').bind(reg.id,course,user,now).run();
   const cookie=await sessionCookie(env,user,course,reg.id);
@@ -357,9 +365,13 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     const origin=req.headers.get('origin');if(origin && origin!==url.origin)return error(403,'Cross-site request rejected');
     if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data))return error(403,'Invalid form token');
     if(!form.title?.trim()||!form.destination)return error(400,'Title and destination required');
-    if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'') || (!env.ENABLE_LOCAL_HTTP&&new URL(form.destination).protocol!=='https:'))return error(400,'Unapproved destination');
+    if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(400,'Unapproved destination');
     if(returnUrl && !env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
-    if(returnUrl){const target=new URL(returnUrl);if(target.protocol!=='https:' && !(env.ENABLE_LOCAL_HTTP && ['localhost','127.0.0.1'].includes(target.hostname)))return error(400,'Invalid Deep Linking return URL');}
+    if(returnUrl){
+      const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();
+      if(!reg)return error(404,'Deployment missing');
+      try{validatedDeepLinkReturn(returnUrl,reg,env);}catch{return error(403,'Deep Linking return origin not registered');}
+    }
     const scope=['global','course','activity'].includes(form.scope)?form.scope:'course';const id=randomId();
     await env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString()).run();
     if(returnUrl){
@@ -371,8 +383,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
         ['https://purl.imsglobal.org/spec/lti-dl/claim/content_items']:[{type:'ltiResourceLink',title:form.title.trim(),url:new URL('/lti/launch',env.PUBLIC_BASE_URL).toString(),custom:{bridge_link_id:id}}],
         ['https://purl.imsglobal.org/spec/lti-dl/claim/data']:data
       });
-      const destination=new URL(returnUrl);
-      if(destination.protocol!=='https:' && !(env.ENABLE_LOCAL_HTTP && destination.hostname==='localhost'))return error(400,'Invalid deep link return URL');
+      const destination=validatedDeepLinkReturn(returnUrl,reg,env);
       return response(html('Return to Canvas',`<form id="return" method="post" action="${escapeHtml(destination.toString())}"><input type="hidden" name="JWT" value="${escapeHtml(token)}"><button>Return link to Canvas</button></form>`));
     }
     return response(html('Link saved',`<p>Saved ${escapeHtml(form.title)}. Link ID: <code>${escapeHtml(id)}</code></p><a href="/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}">Dashboard</a>`));

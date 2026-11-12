@@ -17,11 +17,12 @@ export function buildDestination(destination: string, options: ForwardOptions, n
   }
   return url.toString();
 }
-export function allowedDestination(destination: string, allowlist: string): boolean {
+export function allowedDestination(destination: string, allowlist: string, localDevelopment = false): boolean {
   try {
     const u = new URL(destination);
     if (u.username || u.password) return false;
-    if (u.protocol !== 'https:' && !(u.protocol==='http:' && ['localhost','127.0.0.1'].includes(u.hostname))) return false;
+    if (u.protocol !== 'https:' && !(localDevelopment && u.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(u.hostname))) return false;
+    if (['localhost','127.0.0.1','[::1]'].includes(u.hostname) && !localDevelopment) return false;
     // Even local targets must be explicitly allowlisted; HTTP additionally needs ENABLE_LOCAL_HTTP.
     const allowed = allowlist.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
     return allowed.includes(u.hostname.toLowerCase());
