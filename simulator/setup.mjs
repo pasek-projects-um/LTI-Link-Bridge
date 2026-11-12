@@ -30,12 +30,6 @@ const vars = [
   'RETENTION_LAUNCH_DAYS=90',
   'RETENTION_IDENTITY_DAYS=180',
   'RETENTION_AUDIT_DAYS=365',
-  "INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES('sim-1','course-a','old-student','Old Student','old-student@example.invalid','2021-01-01T00:00:00.000Z','2021-01-02T00:00:00.000Z');",
-  "INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES('sim-1','course-a','old-student','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa','course','','v1');",
-  "INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES('00000000-0000-4000-8000-000000000101','historical-test-fingerprint','2021-01-02T00:00:00.000Z','sim-1','sim-university','course-a','C_aaaaaaaaaaaaaaaaaaaaaaaaaaa','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL,'sim-activity-a','http://localhost:8788','resource:course-a:sim-activity-a','recorded','issued','v1');",
-  "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','old-student','old-section','simulator');",
-  "INSERT OR IGNORE INTO arrival_events(id,launch_id,link_id,event_type,observed_at,received_at,nonce) VALUES('00000000-0000-4000-8000-000000000102','00000000-0000-4000-8000-000000000101','sim-activity-a','opened','2021-01-02T00:00:00.000Z','2021-01-02T00:00:00.000Z','old_unique_nonce_for_retention_1');",
-  "INSERT OR IGNORE INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES('00000000-0000-4000-8000-000000000103','2021-01-02T00:00:00.000Z','sim-1','course-a','teacher-1','retention-test','historical');",
   ''
 ].join('\n');
 if (!existsSync('.dev.vars')) writeFileSync('.dev.vars', vars, { mode: 0o600 });
@@ -48,6 +42,12 @@ const bootstrap = [
   "INSERT OR IGNORE INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at) VALUES('sim-activity-c','sim-1','course-b','Course B Activity','http://localhost:8788/activity','course',1,1,0,1,1,0,'teacher-2','" + now + "');",
   "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','student-1','section-1','simulator');",
   "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','student-1','section-2','simulator');",
+  "INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES('sim-1','course-a','old-student','Old Student','old-student@example.invalid','2021-01-01T00:00:00.000Z','2021-01-02T00:00:00.000Z');",
+  "INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES('sim-1','course-a','old-student','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa','course','','v1');",
+  "INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES('00000000-0000-4000-8000-000000000101','historical-test-fingerprint','2021-01-02T00:00:00.000Z','sim-1','sim-university','course-a','C_aaaaaaaaaaaaaaaaaaaaaaaaaaa','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL,'sim-activity-a','http://localhost:8788','resource:course-a:sim-activity-a','recorded','issued','v1');",
+  "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','old-student','old-section','simulator');",
+  "INSERT OR IGNORE INTO arrival_events(id,launch_id,link_id,event_type,observed_at,received_at,nonce) VALUES('00000000-0000-4000-8000-000000000102','00000000-0000-4000-8000-000000000101','sim-activity-a','opened','2021-01-02T00:00:00.000Z','2021-01-02T00:00:00.000Z','old_unique_nonce_for_retention_1');",
+  "INSERT OR IGNORE INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES('00000000-0000-4000-8000-000000000103','2021-01-02T00:00:00.000Z','sim-1','course-a','teacher-1','retention-test','historical');",
   ''
 ].join('\n');
 writeFileSync(join(root, 'bootstrap.sql'), bootstrap);
