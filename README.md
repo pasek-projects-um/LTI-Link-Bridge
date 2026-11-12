@@ -12,7 +12,7 @@ A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to i
 
 ## Important current limitations
 
-This is **not a completed or security-reviewed LTI installation**. Local Canvas simulator, integrated LTI/Deep Linking tests, optional client JavaScript SDK, Canvas API section lookup, destination arrival confirmation, identity-management UI, robust browser cookie/storage fallback, stronger session and Deep Linking protections, scheduled retention, institutional provisioning workflow, and production validation are not yet complete. The dashboard is basic, with UTC timestamps and 100-row paging; CSV export is bounded to 100,000 rows, not a guaranteed full export of arbitrary size. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
+This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation, optional browser SDK, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
 
 ## Install and local start
 
@@ -38,9 +38,35 @@ Each accepted, authorized resource launch has its own UUID. Identical token retr
 - `src/index.ts`: Worker HTTP routes, verification, instructor tools, persistence.
 - `src/links.ts`: destination validation and query construction.
 - `migrations/`: D1 schema.
-- `tests/`: preliminary offline smoke tests.
+- `simulator/`: signed local Canvas simulator and test-key setup.
+- `tests/`: offline identifier tests and genuine OIDC / Deep Linking integration tests.
 - `ITS-INTEGRATION.md`: institutional review worksheet.
+
+## Local Canvas simulator (implemented)
+
+The simulator uses test RSA signing keys and exercises the real OIDC and LTI verification routes, rather than bypassing authentication. It includes simulated instructors and students, multiple courses and sections, repeat launches, malformed signatures, incorrect issuer/audience/deployments, expired tokens and Deep Linking.
+
+1. Install Node.js 22+ and run `npm install`.
+2. Run `npm run simulator:setup` to generate gitignored `.simulator/keys.json`, `.simulator/bootstrap.sql`, and (if missing) `.dev.vars`. Never commit these test secrets.
+3. Run `npm run db:local` and then `npx wrangler d1 execute DB --local --file=.simulator/bootstrap.sql`.
+4. Start `npm run dev` and in another terminal start `node simulator/server.mjs`.
+5. Open `http://localhost:8788` to launch a simulated instructor or student. A Deep Linking request opens the instructor link builder and can return a signed configured link to simulated Canvas.
+6. With both servers running, `npm run test:integration` exercises authentication, replay rejection, logging, scopes, dashboard access, exports, Deep Linking and section administration. GitHub Actions runs the same integration suite automatically.
+
+This is a *test platform*, not a Canvas UI clone. Never expose the simulator keys or enable `ENABLE_LOCAL_HTTP` for a real institutional installation.
+
+## Browser session fallback
+
+Canvas iframes may block cross-site cookies. After verified instructor authentication, a new-tab link uses a one-time D1 continuation ticket (five-minute expiry) to issue a top-level Secure, HttpOnly, SameSite=Lax cookie. Replay is rejected. This path has automated local coverage, but still needs testing across institutional browsers.
+
+## Instructor-managed sections
+
+Course dashboards link to **Manage sections**. An authorized instructor can map verified, previously observed Canvas user IDs to multiple section IDs, or remove instructor-created memberships. The record is explicitly marked as manually supplied; Canvas API section verification remains an integration task. The default forwarded section is the first section in lexicographic ID order. Unresolved sections are omitted unless the link requires them.
+
+## Complete history exports
+
+Course-scoped CSV exports now use 400-row keyset-paginated streams instead of the former 100,000-row limit. Exports preserve UTC timestamps. Identity exports record an audit event and neutralize spreadsheet-formula-like fields. Large-load validation and an institutional retention policy are still required.
 
 ## Remaining work before ITS review
 
-Implement a full signed simulator, complete LTI and Deep Linking end-to-end tests, hardened multi-course auth/session protection, secure registered deep-link callback validation, strict production redirect policies, complete exports with bounded streaming, section resolution and management, retention/purge workflows, and Cloudflare CI and deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.
+Extend coverage of issuer/deployment edge cases, harden Deep Linking return URL registration, prohibit loopback URLs in production, add Canvas API section lookup, destination arrival callbacks, configurable user-identifier key rotation, retention/purge workflows, stronger audit controls, accessibility review and production deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.

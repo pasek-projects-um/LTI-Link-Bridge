@@ -6,7 +6,7 @@ LTI Link Bridge brokers Canvas-authenticated launches of instructor-configured a
 ## Data collected and stored
 - Verified LTI issuer/client/deployment, course context, user subject, optional Canvas name/email, roles (in transient processing), resource-link ID, timestamp, link target origin, pseudonymized codes, export audit metadata.
 - Sensitive `identities`/`identity_codes` are separated from general `launches` in SQL tables, but **not** in separate encryption domains or databases yet.
-- Section membership is optionally instructor-provisioned. Current Canvas API section lookup is not implemented.
+- Section membership may now be instructor-managed through an authenticated, course-scoped dashboard, only for subjects established by verified LTI launches. Multiple memberships are stored and manual edits audited. Current Canvas API section lookup is not implemented.
 
 ## Data transmitted to destinations
 Only selected HMAC pseudonyms for user/course/section plus link ID and per-launch UUID query parameters. No raw Canvas subject, SIS ID, name, or email. URL query parameters can appear in recipient logs and history and therefore must not be treated as confidential authentication credentials.
@@ -15,7 +15,7 @@ Only selected HMAC pseudonyms for user/course/section plus link ID and per-launc
 LTI 1.3 OIDC login, resource launch, and Deep Linking. No Canvas API permissions used in this milestone; future section membership lookup will require separately scoped API authorization and institutional consent.
 
 ## Authentication
-Platform RS256 ID token verified against platform JWKS using `jose`; checks issuer/audience/deployment/state/nonce/claims. States stored in Cloudflare D1. Instructor access is course-scoped to verified instructor launches and session. Full LTI browser compatibility and CSRF hardening require review.
+Platform RS256 ID token verified against platform JWKS using `jose`; checks issuer/audience/deployment/state/nonce/claims. States stored in Cloudflare D1. Instructor access is course-scoped to verified LTI roles and sessions. A one-use D1 continuation ticket opens the instructor dashboard or Deep Linking builder in a top-level tab to mitigate blocked iframe cookies. Browser compatibility, return URL restrictions and CSRF controls still require institutional review.
 
 ## Storage, retention, deletion
 Cloudflare Workers + D1, region/account-dependent location. No automated retention, legal hold, purge, or subject access procedure yet. Institution must define retention periods and Cloudflare vendor requirements before approval.
@@ -33,11 +33,13 @@ Cloudflare Workers + D1, region/account-dependent location. No automated retenti
 - Data retention schedule and staff authorization policy are TBD.
 
 ## Testing and approval checklist
-- [ ] Complete local Canvas LTI simulator and end-to-end launch / replay / Deep Linking suite.
+- [x] Implement local test-key Canvas simulator and automated OIDC, replay, launch, Deep Linking and authorization tests (Cloudflare CI).
+- [ ] Extend test suite and perform Canvas browser validation with university test environment.
 - [ ] Resolve third-party cookie behavior under Canvas iframe restrictions.
 - [ ] Validate Canvas placement and protected deep link return destination.
 - [ ] Verify course and instructor access isolation under adversarial scenarios.
-- [ ] Complete row-safe/full-history export, CSV injection protection, and auditing.
+- [x] Implement cursor-streamed complete CSV exports, CSV formula neutralization and identity-export audits.
+- [ ] Load-test institutional-scale exports and confirm institution-approved audit retention.
 - [ ] Review FERPA classification, institutional vendor agreement, data residency, retention, breach reporting and incident response.
 - [ ] Conduct dependency/security assessment and network testing.
 - [ ] Register in institutional test Canvas and validate without production student data.
