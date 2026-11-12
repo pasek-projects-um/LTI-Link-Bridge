@@ -102,8 +102,14 @@ test('Deep Linking creates a link returned as a signed Canvas content item', asy
   const startHtml=await initiated.post.text();
   const match=startHtml.match(/href="([^"]+)"/);
   assert.ok(match,'Deep Linking builder link');
-  const builder=await fetch(decodeHtml(match[1]),{headers:{Cookie:cookie}});
+  const continued=await fetch(bridge+decodeHtml(match[1]),{redirect:'manual'});
+  assert.equal(continued.status,303);
+  const topLevelCookie=continued.headers.get('set-cookie').split(';')[0];
+  assert.match(continued.headers.get('set-cookie'),/SameSite=Lax/);
+  const builder=await fetch(new URL(continued.headers.get('location'),bridge),{headers:{Cookie:topLevelCookie}});
   assert.equal(builder.status,200);
+  const replay=await fetch(bridge+decodeHtml(match[1]),{redirect:'manual'});
+  assert.equal(replay.status,403);
   const builderHtml=await builder.text();
   const data={
     course:hidden(builderHtml,'course'), deployment:hidden(builderHtml,'deployment'),
