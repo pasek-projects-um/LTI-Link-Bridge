@@ -22,7 +22,7 @@ export function allowedDestination(destination: string, allowlist: string): bool
     const u = new URL(destination);
     if (u.username || u.password) return false;
     if (u.protocol !== 'https:' && !(u.protocol==='http:' && ['localhost','127.0.0.1'].includes(u.hostname))) return false;
-    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true; // Local simulator only: production must disable via environment.
+    // Even local targets must be explicitly allowlisted; HTTP additionally needs ENABLE_LOCAL_HTTP.
     const allowed = allowlist.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
     return allowed.includes(u.hostname.toLowerCase());
   } catch { return false; }
