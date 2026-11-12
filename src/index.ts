@@ -215,7 +215,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const filter=`<form method="get"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><label>Activity <select name="link"><option value="">All</option>${linkOptions}</select></label><label>Student code <input name="user" value="${escapeHtml(filterUser)}"></label><label>From UTC <input name="since" placeholder="2026-01-01T00:00:00Z" value="${escapeHtml(since)}"></label><label>Until UTC <input name="until" placeholder="2026-12-31T23:59:59Z" value="${escapeHtml(until)}"></label><button>Filter</button></form>`;
   const exports=`<p><a href="/instructor/export?${base}&type=launches">Export all launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}<table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}<table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -283,6 +283,54 @@ function csvCell(value:unknown):string{
   const neutral=/^\s*[=+\-@]/.test(raw)?"'"+raw:raw;
   return '"'+neutral.replace(/"/g,'""')+'"';
 }
+// Instructor-managed section membership fallback. A user must first have a
+// cryptographically verified LTI launch before the instructor can map them.
+async function manageSections(req:Request,env:Env):Promise<Response>{
+  const url=new URL(req.url);
+  const fields=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
+  const course=fields.course||'',deploy=fields.deployment||'';
+  const session=await authorize(req,env,course,deploy);
+  if(!session)return error(403,'Verified instructor access required');
+  const csrf=await hmac(env.SESSION_SECRET,'sections',deploy,course,session.user);
+  if(req.method==='POST'){
+    const origin=req.headers.get('origin');
+    if(origin&&origin!==url.origin)return error(403,'Cross-origin section update refused');
+    if(fields.csrf!==csrf)return error(403,'Invalid section form token');
+    const user=(fields.user_id||'').trim(),section=(fields.section_id||'').trim();
+    if(!user||!section||user.length>150||section.length>150||/[\r\n\0]/.test(user+section))
+      return error(400,'Invalid user or section identifier');
+    const found=await env.DB.prepare('SELECT user_id FROM identities WHERE deployment_id=? AND course_id=? AND user_id=?')
+      .bind(deploy,course,user).first();
+    if(!found)return error(400,'Student must first launch through verified LTI before a section can be assigned');
+    if(fields.action==='remove'){
+      await env.DB.prepare("DELETE FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? AND section_id=? AND source='instructor'")
+        .bind(deploy,course,user,section).run();
+    }else if(fields.action==='add'){
+      await env.DB.prepare("INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES(?,?,?,?,'instructor')")
+        .bind(deploy,course,user,section).run();
+    }else return error(400,'Unknown section operation');
+    await env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)')
+      .bind(randomId(),new Date().toISOString(),deploy,course,session.user,'section_'+fields.action,JSON.stringify({user,section})).run();
+    return response('',303,'text/plain',{'Location':'/instructor/sections?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)});
+  }
+  const all=await env.DB.prepare(
+    "SELECT i.user_id,i.full_name,i.email, "+
+    "(SELECT group_concat(m.section_id, '; ') FROM section_memberships m "+
+    "WHERE m.deployment_id=i.deployment_id AND m.course_id=i.course_id AND m.user_id=i.user_id) AS section_ids "+
+    "FROM identities i WHERE i.deployment_id=? AND i.course_id=? ORDER BY i.user_id LIMIT 500"
+  ).bind(deploy,course).all<Record<string,unknown>>();
+  const rows=all.results.map(row=>'<tr><td>'+escapeHtml(row.user_id)+'</td><td>'+escapeHtml(row.full_name||'not released')+'</td><td>'+escapeHtml(row.section_ids||'unresolved')+'</td></tr>').join('');
+  const base='<input type="hidden" name="course" value="'+escapeHtml(course)+'"><input type="hidden" name="deployment" value="'+escapeHtml(deploy)+'"><input type="hidden" name="csrf" value="'+csrf+'">';
+  const form='<form method="post">'+base+
+    '<label>Verified Canvas user ID <input name="user_id" required maxlength="150"></label>'+
+    '<label>Canvas section ID (instructor supplied) <input name="section_id" required maxlength="150"></label>'+
+    '<button name="action" value="add">Add membership</button> <button name="action" value="remove">Remove instructor mapping</button></form>';
+  return response(html('Instructor section mappings',
+    '<p><a href="/instructor?course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy)+'">Back to dashboard</a></p>'+
+    '<p>Students must first launch an activity before section mapping. Multiple section memberships are supported. This manual mapping has not been verified against the Canvas API. The default forwarding policy selects the lexicographically first mapped section ID.</p>'+
+    form+'<h2>Observed students and sections</h2><table><tr><th>Canvas user ID</th><th>Name</th><th>Section IDs</th></tr>'+rows+'</table>'+
+    '<p>Showing up to 500 observed students. This interface never exposes mappings to students or destination websites.</p>'));
+}
 async function createLink(req:Request,env:Env):Promise<Response>{
   const url=new URL(req.url),form=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
   const course=form.course||'',deploy=form.deployment||'';
@@ -328,6 +376,7 @@ export default {
       if(path==='/lti/launch'&&req.method==='POST')return launch(req,env);
       if(path==='/instructor/continue'&&req.method==='GET')return continueInstructor(req,env);
       if(path==='/instructor'&&req.method==='GET')return dashboard(req,env);
+      if(path==='/instructor/sections'&&['GET','POST'].includes(req.method))return manageSections(req,env);
       if(path==='/instructor/create'&&['GET','POST'].includes(req.method))return createLink(req,env);
       if(path==='/instructor/export'&&req.method==='GET')return exportCsv(req,env);
       if(path==='/')return response(html('LTI Link Bridge','<p>Launch from your learning management system to access this tool.</p>'));

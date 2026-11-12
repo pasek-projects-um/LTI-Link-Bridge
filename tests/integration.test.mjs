@@ -132,3 +132,35 @@ test('Deep Linking creates a link returned as a signed Canvas content item', asy
   assert.equal(location.searchParams.get('preexisting'),'ok');
   assert.equal(location.searchParams.get('link'),createdLink);
 });
+
+test('instructor can manage multiple section memberships for observed students', async () => {
+  const first=await launch({user:'student-99',link:'sim-activity-a'});
+  assert.equal(first.post.status,303);
+  assert.equal(new URL(first.post.headers.get('location')).searchParams.get('section'),null);
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const uri=bridge+'/instructor/sections?course=course-a&deployment=sim-1';
+  const screen=await fetch(uri,{headers:{Cookie:cookie}});
+  assert.equal(screen.status,200);
+  const page=await screen.text();
+  assert.match(page,/student-99/);
+  const form={course:'course-a',deployment:'sim-1',csrf:hidden(page,'csrf'),user_id:'student-99',section_id:'section-99',action:'add'};
+  const save=await fetch(bridge+'/instructor/sections',{method:'POST',redirect:'manual',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams(form)});
+  assert.equal(save.status,303);
+  form.section_id='section-88';
+  const extra=await fetch(bridge+'/instructor/sections',{method:'POST',redirect:'manual',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams(form)});
+  assert.equal(extra.status,303);
+  const second=await launch({user:'student-99',link:'sim-activity-a'});
+  assert.equal(second.post.status,303);
+  assert.match(new URL(second.post.headers.get('location')).searchParams.get('section'),/^S_/);
+  const roster=await (await fetch(uri,{headers:{Cookie:cookie}})).text();
+  assert.match(roster,/section-88; section-99|section-99; section-88/);
+  const student=await fetch(uri);
+  assert.equal(student.status,403);
+  const incorrect=await fetch(bridge+'/instructor/sections',{method:'POST',redirect:'manual',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({...form, user_id:'student-not-seen'})});
+  assert.equal(incorrect.status,400);
+  const exportData=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=identities',{headers:{Cookie:cookie}});
+  assert.equal(exportData.status,200);
+  assert.match(await exportData.text(),/section-88/);
+});
