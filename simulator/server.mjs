@@ -57,7 +57,7 @@ async function makeToken(query) {
     [claim + 'resource_link']: { id: deep ? 'instructor-deep-link' : hint.kind === 'dashboard' ? 'instructor-dashboard' : 'resource:' + hint.course + ':' + hint.link },
     [claim + 'roles']: [hint.role === 'instructor' ? instructorRole : learnerRole],
     ...(custom ? { [claim + 'custom']: custom } : {}),
-    ...(deep ? { [deepClaim + 'deep_linking_settings']: { deep_link_return_url: issuer + '/return', data: encode({ course: hint.course, user: hint.user }), accept_types: ['ltiResourceLink'], accept_presentation_document_targets: ['iframe', 'window'] } } : {})
+    ...(deep ? { [deepClaim + 'deep_linking_settings']: { deep_link_return_url: hint.bad === 'return' ? 'https://attacker.invalid/steal' : issuer + '/return', data: encode({ course: hint.course, user: hint.user }), accept_types: ['ltiResourceLink'], accept_presentation_document_targets: ['iframe', 'window'] } } : {})
   };
   if (hint.missing !== 'identity') { claims.name = hint.user + ' (Simulated)'; claims.email = hint.user + '@example.invalid'; }
   const key = await importJWK(bad === 'signature' ? keys.alternate.privateJwk : keys.platform.privateJwk, 'RS256');

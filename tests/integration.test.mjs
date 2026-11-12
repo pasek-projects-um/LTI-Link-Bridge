@@ -176,3 +176,23 @@ test('known resource placement resolves even if the optional custom claim is abs
   const target=new URL(fallback.post.headers.get('location'));
   assert.equal(target.searchParams.get('link'),'sim-activity-a');
 });
+
+test('Deep Linking refuses platform-signed callback to an unregistered origin',async()=>{
+  const attempt=await launch({role:'instructor',kind:'deep',user:'teacher-1',bad:'return'});
+  assert.equal(attempt.post.status,403);
+  assert.equal(attempt.post.headers.get('set-cookie'),null);
+  assert.equal(attempt.post.headers.get('location'),null);
+});
+test('instructor cannot modify Deep Linking callback or signed data through builder URL',async()=>{
+  const initiated=await launch({role:'instructor',kind:'deep',user:'teacher-1'});
+  assert.equal(initiated.post.status,200);
+  const cookie=initiated.post.headers.get('set-cookie').split(';')[0];
+  const html=await initiated.post.text();
+  const href=decodeHtml(html.match(/href="([^"]+)"/)[1]);
+  const continueResult=await fetch(bridge+href,{redirect:'manual'});
+  assert.equal(continueResult.status,303);
+  const builderUrl=new URL(continueResult.headers.get('location'),bridge);
+  builderUrl.searchParams.set('return','https://attacker.invalid/steal');
+  const tampered=await fetch(builderUrl,{headers:{Cookie:cookie}});
+  assert.equal(tampered.status,403);
+});
