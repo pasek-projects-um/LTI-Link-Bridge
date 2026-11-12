@@ -18,7 +18,7 @@ function decodeSecret(value: string): Uint8Array {
   return result;
 }
 export async function hmac(secret: string, ...parts: string[]): Promise<string> {
-  const key = await crypto.subtle.importKey('raw',decodeSecret(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const key = await crypto.subtle.importKey('raw',Uint8Array.from(decodeSecret(secret)),{name:'HMAC',hash:'SHA-256'},false,['sign']);
   // Canonical JSON serialization ensures different input sequences cannot alias.
   const bytes = new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(JSON.stringify(parts))));
   return b64url(bytes.slice(0,20)); // 160 bits
