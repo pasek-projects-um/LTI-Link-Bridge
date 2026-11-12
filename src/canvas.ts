@@ -68,7 +68,7 @@ export async function lookupCanvasSections(reg:CanvasConfig,course:string,user:s
     const link=res.headers.get('Link')||'';
     const match=link.match(/<([^>]+)>;\s*rel="next"/);
     if(!match){next=null;break;}
-    const candidate=new URL(match[1],next);
+    const candidate:URL=new URL(match[1],next);
     if(candidate.origin!==endpoint.origin||candidate.pathname!==endpoint.pathname)
       throw new Error('Canvas pagination crossed a registered API boundary');
     next=candidate;
