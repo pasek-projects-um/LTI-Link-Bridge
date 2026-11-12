@@ -80,13 +80,22 @@ async function verifyLaunch(req:Request,env:Env) {
   const registration=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(stored.deployment_id).first<Registration>();
   if(!registration)throw new Error('Unknown deployment');
   const claims=await verifyPlatformJwt(idToken,registration,stored.nonce) as Launch;
-  if(claims[deploymentClaim]!==registration.deployment_id)throw new Error('Deployment mismatch');
+  // Multiple LTI deployments can share the same issuer and client ID.
+  // Resolve the actual deployment from the *verified* signed claim rather than
+  // selecting whichever registration SQLite happened to return at OIDC start.
+  const claimedDeployment=claims[deploymentClaim];
+  if(typeof claimedDeployment!=='string' || !claimedDeployment)throw new Error('Missing deployment claim');
+  const actualRegistration=await env.DB.prepare('SELECT * FROM deployments WHERE issuer=? AND client_id=? AND deployment_id=?')
+    .bind(registration.issuer,registration.client_id,claimedDeployment).first<Registration>();
+  if(!actualRegistration)throw new Error('Deployment mismatch');
+  if(actualRegistration.jwks_url!==registration.jwks_url || actualRegistration.auth_url!==registration.auth_url)
+    throw new Error('Inconsistent platform registration for deployment');
   if(claims[LTI+'version']!=='1.3.0')throw new Error('Unsupported LTI version');
   if(!['LtiResourceLinkRequest','LtiDeepLinkingRequest'].includes(claims[messageClaim]))throw new Error('Unsupported LTI message type');
   if(!Array.isArray(claims[roleClaim]))throw new Error('Missing LTI roles');
   const change=await env.DB.prepare('UPDATE oidc_states SET consumed_at=? WHERE state=? AND consumed_at IS NULL AND expires_at>=?').bind(Math.floor(Date.now()/1000),state,Math.floor(Date.now()/1000)).run();
   if(change.meta.changes!==1)throw new Error('Replayed LTI state');
-  return {claims,registration,token:idToken};
+  return {claims,registration:actualRegistration,token:idToken};
 }
 function getLinkId(claims:Launch):string | null {
   const custom=claims[LTI+'custom'];
