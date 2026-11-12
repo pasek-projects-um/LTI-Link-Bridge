@@ -217,21 +217,71 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const next=new URL(url);next.searchParams.set('page',String(page+1));
   return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}<table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
 }
-function csv(rows:Record<string,unknown>[],cols:string[]):string{
-  const safe=(value:unknown)=>{const s=String(value??'');const neutral=/^[=+@\-\t\r]/.test(s)?"'"+s:s;return '"'+neutral.replace(/"/g,'""')+'"';};
-  return [cols.join(','),...rows.map(r=>cols.map(c=>safe(r[c])).join(','))].join('\r\n')+'\r\n';
-}
+// Export every row using stable keyset pagination, rather than silently
+// truncating education records at an arbitrary LIMIT.
 async function exportCsv(req:Request,env:Env):Promise<Response>{
   const url=new URL(req.url),course=url.searchParams.get('course')||'',deploy=url.searchParams.get('deployment')||'';
-  const session=await authorize(req,env,course,deploy);if(!session)return error(403,'Instructor access required');
-  const identity=url.searchParams.get('type')==='identities';
-  const sql=identity
-    ? 'SELECT i.user_id,i.full_name,i.email,c.user_code,c.scope,c.link_id,c.key_version,i.first_seen,i.last_seen FROM identities i JOIN identity_codes c ON c.deployment_id=i.deployment_id AND c.course_id=i.course_id AND c.user_id=i.user_id WHERE i.deployment_id=? AND i.course_id=? ORDER BY i.user_id,c.user_code LIMIT 100000'
-    : 'SELECT id,event_time,institution,deployment_id,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,error_code,key_version FROM launches WHERE deployment_id=? AND course_id=? ORDER BY event_time,id LIMIT 100000';
-  const result=await env.DB.prepare(sql).bind(deploy,course).all<Record<string,unknown>>();
-  const columns=identity?['user_id','full_name','email','user_code','scope','link_id','key_version','first_seen','last_seen']:['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version'];
-  if(identity)await env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)').bind(randomId(),new Date().toISOString(),deploy,course,session.user,'identity_export',String(result.results.length)).run();
-  return response(csv(result.results,columns),200,'text/csv; charset=utf-8',{'Content-Disposition':`attachment; filename="bridge-${identity?'identities':'launches'}.csv"`});
+  const session=await authorize(req,env,course,deploy);
+  if(!session)return error(403,'Instructor access required');
+  const exportType=url.searchParams.get('type')||'launches';
+  if(!['launches','identities'].includes(exportType))return error(400,'Unsupported CSV export');
+  const identities=exportType==='identities';
+  const link=url.searchParams.get('link')||'',user=url.searchParams.get('user')||'';
+  const since=url.searchParams.get('since')||'',until=url.searchParams.get('until')||'';
+  const columns=identities
+    ? ['user_id','full_name','email','user_code','scope','link_id','key_version','section_ids','first_seen','last_seen']
+    : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version'];
+  if(identities){
+    const auditDetails=JSON.stringify({scope:'identity_mapping',link:link||null,user:user||null});
+    await env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)')
+      .bind(randomId(),new Date().toISOString(),deploy,course,session.user,'identity_export',auditDetails).run();
+  }
+  const encoder=new TextEncoder();
+  let lastTime='',lastId='',lastUser='',lastCode='',finished=false;
+  const stream=new ReadableStream<Uint8Array>({
+    start(controller){controller.enqueue(encoder.encode(columns.join(',')+'\r\n'));},
+    async pull(controller){
+      if(finished){controller.close();return;}
+      try {
+        let query:string;
+        const values:unknown[]=[deploy,course];
+        if(identities){
+          const where=['i.deployment_id=?','i.course_id=?'];
+          if(user){where.push('c.user_code=?');values.push(user);}
+          if(link){where.push('c.link_id=?');values.push(link);}
+          if(lastUser){where.push('(i.user_id>? OR (i.user_id=? AND c.user_code>?))');values.push(lastUser,lastUser,lastCode);}
+          query='SELECT i.user_id,i.full_name,i.email,c.user_code,c.scope,c.link_id,c.key_version,'+
+            '(SELECT group_concat(m.section_id, \';\') FROM section_memberships m WHERE m.deployment_id=i.deployment_id AND m.course_id=i.course_id AND m.user_id=i.user_id) AS section_ids,'+
+            'i.first_seen,i.last_seen FROM identities i JOIN identity_codes c ON c.deployment_id=i.deployment_id AND c.course_id=i.course_id AND c.user_id=i.user_id '+
+            'WHERE '+where.join(' AND ')+' ORDER BY i.user_id,c.user_code LIMIT 400';
+        }else{
+          const where=['deployment_id=?','course_id=?'];
+          if(user){where.push('user_code=?');values.push(user);}
+          if(link){where.push('link_id=?');values.push(link);}
+          if(since){where.push('event_time>=?');values.push(since);}
+          if(until){where.push('event_time<=?');values.push(until);}
+          if(lastTime){where.push('(event_time>? OR (event_time=? AND id>?))');values.push(lastTime,lastTime,lastId);}
+          query='SELECT '+columns.join(',')+' FROM launches WHERE '+where.join(' AND ')+' ORDER BY event_time,id LIMIT 400';
+        }
+        const rows=(await env.DB.prepare(query).bind(...values).all<Record<string,unknown>>()).results;
+        if(rows.length===0){finished=true;controller.close();return;}
+        controller.enqueue(encoder.encode(rows.map(r=>columns.map(c=>csvCell(r[c])).join(',')).join('\r\n')+'\r\n'));
+        if(identities){
+          const last=rows[rows.length-1];lastUser=String(last.user_id);lastCode=String(last.user_code);
+        }else{
+          const last=rows[rows.length-1];lastTime=String(last.event_time);lastId=String(last.id);
+        }
+        if(rows.length<400){finished=true;controller.close();}
+      }catch(e){controller.error(e);}
+    }
+  });
+  return new Response(stream,{status:200,headers:{...securityHeaders,'Content-Type':'text/csv; charset=utf-8',
+    'Content-Disposition':'attachment; filename="bridge-'+exportType+'.csv"'}});
+}
+function csvCell(value:unknown):string{
+  const raw=String(value??'');
+  const neutral=/^\s*[=+\-@]/.test(raw)?"'"+raw:raw;
+  return '"'+neutral.replace(/"/g,'""')+'"';
 }
 async function createLink(req:Request,env:Env):Promise<Response>{
   const url=new URL(req.url),form=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
