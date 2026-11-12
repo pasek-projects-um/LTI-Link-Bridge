@@ -12,7 +12,7 @@ A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to i
 
 ## Important current limitations
 
-This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, destination arrival confirmation without a trusted server-side integration, identity administration beyond manual section mappings, additional iframe compatibility testing, institutional provisioning, scheduled retention and production validation remain unfinished. The dashboard has basic UTC timestamps and 100-row paging; CSV exports stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
+This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. Canvas API section lookup, institution-specific destination-server integration, identity administration beyond manual section mappings, additional iframe/browser compatibility testing, institutional provisioning, approved retention policy and production validation remain unfinished. The dashboard shows timestamps in the instructor browser's local time zone (with a UTC fallback) and uses 100-row paging; CSV exports retain UTC and stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
 
 ## Install and local start
 
@@ -28,7 +28,7 @@ To use Canvas, request an LTI 1.3 developer-key registration with login initiati
 
 ## Data and trust
 
-Signed LTI claims are verified before processing. The service never forwards raw Canvas IDs or name/email to activities; it forwards only selected pseudonyms. Do not treat a pseudonym as a login credential or proof of identity. Instructors can access their course's identity exports, which are sensitive education records subject to institutional controls and FERPA. Do not retain records indefinitely by default; an approved institutional data-retention schedule and deletion mechanism are still required. Data remains in the configured Cloudflare D1 jurisdiction; institution must evaluate vendor/data-residency obligations.
+Signed LTI claims are verified before processing. The service never forwards raw Canvas IDs or name/email to activities; it forwards only selected pseudonyms. Do not treat a pseudonym as a login credential or proof of identity. Instructors can access their course's identity exports, which are sensitive education records subject to institutional controls and FERPA. Scheduled deletion of educational records is disabled until an institution explicitly approves and configures its policy; ephemeral auth tokens can be cleaned automatically. Data remains in the configured Cloudflare D1 jurisdiction; institution must evaluate vendor/data-residency obligations.
 
 Each accepted, authorized resource launch has its own UUID. Identical token retries are rejected, not logged a second time. A redirect means the Worker issued a Location header; it does **not** prove the browser opened the destination. `identity_codes` allows multiple codes and scopes per user. Multi-section instructor mappings are present in schema but currently only the lexicographically first section is used. Identifier secret rotation supports explicit `v1` and `v2` keys. Existing links retain their pinned version; a newly created course uses `HMAC_ACTIVE_VERSION`. Old keys must be retained while old links are active, and switching versions changes codes across newly rotated scopes.
 
@@ -64,9 +64,13 @@ Canvas iframes may block cross-site cookies. After verified instructor authentic
 
 Course dashboards link to **Manage sections**. An authorized instructor can map verified, previously observed Canvas user IDs to multiple section IDs, or remove instructor-created memberships. The record is explicitly marked as manually supplied; Canvas API section verification remains an integration task. The default forwarded section is the first section in lexicographic ID order. Unresolved sections are omitted unless the link requires them.
 
+## Instructor-local times without altering UTC records
+
+Chronological launch timestamps, first/last launches, and destination-reported opening times render as semantic `<time>` elements. A small same-origin JavaScript file formats them using the instructor browser's detected IANA time zone; JavaScript-disabled browsers fall back to explicit UTC strings. The daily aggregation still uses UTC calendar days and is labeled accordingly. All CSV exports retain ISO-8601 UTC timestamps, independently of browser display.
+
 ## Complete history exports
 
-Course-scoped CSV exports now use 400-row keyset-paginated streams instead of the former 100,000-row limit. Exports preserve UTC timestamps. Identity exports record an audit event and neutralize spreadsheet-formula-like fields. Large-load validation and an institutional retention policy are still required.
+Course-scoped CSV exports now use 400-row keyset-paginated streams instead of the former 100,000-row limit. Exports preserve UTC timestamps. Identity exports record an audit event and neutralize spreadsheet-formula-like fields. Large-load validation and institutional retention-policy approval are still required.
 
 ## Optional destination-side JavaScript helper
 
@@ -123,4 +127,4 @@ During local development, run `npx wrangler dev --local --test-scheduled` and in
 
 ## Remaining work before ITS review
 
-Extend coverage of issuer/deployment edge cases, harden Deep Linking return URL registration, prohibit loopback URLs in production, add Canvas API section lookup, external-destination callback deployment integration, additional key-version migration and institutional rotation governance, retention/purge workflows, stronger audit controls, accessibility review and production deployment runbooks. Do not deploy or register against Michigan Canvas without explicit authorization.
+Complete Canvas API section lookup, verify institution-specific Deep Linking return origins, integrate authenticated destination-side arrival reporting, develop institutional key-rotation and retention operations, add stricter export/audit controls, load testing, accessibility review and a vetted production deployment runbook. Do not deploy or register against Michigan Canvas without explicit authorization.

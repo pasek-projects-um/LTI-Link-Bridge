@@ -2,6 +2,7 @@ import { LTI, INSTRUCTOR, ADMIN, randomId, urlToken, pseudonym, fingerprint, ver
 import { buildDestination, allowedDestination, escapeHtml } from './links.ts';
 import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
 import { runRetention } from './retention.ts';
+import { dashboardScript } from './dashboard-script.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
@@ -21,7 +22,7 @@ const cookieName='bridge_session';
 const securityHeaders: Record<string,string> = {
   'X-Content-Type-Options':'nosniff',
   'Referrer-Policy':'no-referrer',
-  'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:*; frame-ancestors https: http://localhost:*; base-uri 'none'",
+  'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:*; frame-ancestors https: http://localhost:*; base-uri 'none'",
   'Cache-Control':'no-store',
 };
 function response(body:string, status=200, type='text/html; charset=utf-8', headers:Record<string,string>={}) {
@@ -29,6 +30,11 @@ function response(body:string, status=200, type='text/html; charset=utf-8', head
 }
 function error(status:number, message:string) { return response(`<h1>${status}</h1><p>${escapeHtml(message)}</p>`,status); }
 function html(title:string,body:string) {return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:16px system-ui;max-width:1100px;margin:3rem auto;padding:0 1rem;color:#182234}nav{display:flex;gap:1rem;margin:1rem 0}a{color:#2451a0}input,select,button{padding:.55rem;margin:.3rem}table{border-collapse:collapse;width:100%}td,th{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}label{display:block;margin:.4rem}section{padding:1rem;background:#f5f7fb;margin:1rem 0;border-radius:.4rem}</style><h1>${escapeHtml(title)}</h1>${body}</html>`;}
+function timeCell(value:unknown):string {
+  const stamp=String(value??'');
+  if(!stamp)return '—';
+  return '<time datetime="'+escapeHtml(stamp)+'" data-utc="'+escapeHtml(stamp)+'">'+escapeHtml(stamp)+' UTC</time>';
+}
 async function parseForm(req:Request) { const data=await req.formData(); return Object.fromEntries([...data].map(([k,v])=>[k,String(v)])); }
 async function registration(env:Env,issuer:string,clientId:string):Promise<Registration|null> {
   return env.DB.prepare('SELECT * FROM deployments WHERE issuer=? AND client_id=? LIMIT 1').bind(issuer,clientId).first<Registration>();
@@ -242,10 +248,10 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
 
   const base=`course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}`;
   const linkOptions=links.results.map(l=>`<option value="${escapeHtml(l.id)}" ${filterLink===l.id?'selected':''}>${escapeHtml(l.title)}</option>`).join('');
-  const tbody=rows.results.map(r=>`<tr><td>${escapeHtml(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td><td>${r.destination_opened_at?escapeHtml(r.destination_opened_at):'Not confirmed'}</td></tr>`).join('');
+  const tbody=rows.results.map(r=>`<tr><td>${timeCell(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td><td>${r.destination_opened_at?timeCell(r.destination_opened_at):'Not confirmed'}</td></tr>`).join('');
   const summaryByDay=byDay.results.map(r=>'<tr><td>'+escapeHtml(r.day)+'</td><td>'+escapeHtml(r.total)+'</td></tr>').join('');
   const summaryByActivity=byActivity.results.map(r=>'<tr><td><a href="/instructor?'+base+'&link='+encodeURIComponent(r.link_id)+'">'+escapeHtml(r.title)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.students)+'</td></tr>').join('');
-  const summaryByStudent=byStudent.results.map(r=>'<tr><td><a href="/instructor?'+base+'&user='+encodeURIComponent(r.user_code)+'">'+escapeHtml(r.user_code)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.activities)+'</td><td>'+escapeHtml(r.last_launch)+'</td></tr>').join('');
+  const summaryByStudent=byStudent.results.map(r=>'<tr><td><a href="/instructor?'+base+'&user='+encodeURIComponent(r.user_code)+'">'+escapeHtml(r.user_code)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.activities)+'</td><td>'+timeCell(r.last_launch)+'</td></tr>').join('');
   const tables='<section><h2>Launches by day (UTC)</h2><table><tr><th>Day</th><th>Launches</th></tr>'+summaryByDay+'</table></section>'+
     '<section><h2>Activity summary</h2><table><tr><th>Activity</th><th>Launches</th><th>Unique students</th></tr>'+summaryByActivity+'</table></section>'+
     '<section><h2>Student summary</h2><table><tr><th>Pseudonymous user</th><th>Launches</th><th>Activities</th><th>Last launch (UTC)</th></tr>'+summaryByStudent+'</table><small>Top 100 students by launch count; filter the student code to view the complete history.</small></section>';
@@ -254,7 +260,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
   const exports=`<p><a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${escapeHtml(counts?.first_launch||'—')} · Last ${escapeHtml(counts?.last_launch||'—')}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -500,6 +506,7 @@ export default {
     try{
       const path=new URL(req.url).pathname;
       if(path==='/health')return response(JSON.stringify({status:'ok'}),200,'application/json');
+      if(path==='/static/dashboard.js'&&req.method==='GET')return response(dashboardScript,200,'text/javascript; charset=utf-8');
       if(path==='/lti/jwks')return env.TOOL_PRIVATE_JWK?response(JSON.stringify({keys:[publicJwk(env.TOOL_PRIVATE_JWK)]}),200,'application/json'):error(503,'Signing key unavailable');
       if(path==='/lti/login'&&['GET','POST'].includes(req.method))return login(req,env);
       if(path==='/lti/launch'&&req.method==='POST')return launch(req,env);

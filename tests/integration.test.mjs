@@ -85,6 +85,11 @@ test('verified instructor sees history but student cannot retrieve protected CSV
   assert.match(body,/Launches by day/);
   assert.match(body,/Activity summary/);
   assert.match(body,/Student summary/);
+  assert.match(body,/data-local-timezone/);
+  assert.match(body,/<time datetime=/);
+  const localization=await fetch(bridge+'/static/dashboard.js');
+  assert.equal(localization.status,200);
+  assert.match(await localization.text(),/Intl.DateTimeFormat/);
   const exports=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=launches',{headers:{Cookie:cookie}});
   assert.equal(exports.status,200);
   const csv=await exports.text();
