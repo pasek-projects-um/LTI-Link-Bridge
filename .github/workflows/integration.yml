@@ -1,0 +1,27 @@
+name: Local LTI Integration
+on:
+  push:
+  pull_request:
+jobs:
+  simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: node simulator/setup.mjs
+      - run: npx wrangler d1 migrations apply DB --local
+      - run: npx wrangler d1 execute DB --local --file=.simulator/bootstrap.sql
+      - name: Start simulated Canvas and Worker and run real OIDC tests
+        run: |
+          set -eu
+          node simulator/server.mjs > /tmp/lti-simulator.log 2>&1 &
+          SIM_PID=$!
+          npx wrangler dev --local --port 8787 > /tmp/lti-worker.log 2>&1 &
+          WORKER_PID=$!
+          trap 'kill "$SIM_PID" "$WORKER_PID" 2>/dev/null || true; cat /tmp/lti-simulator.log; tail -100 /tmp/lti-worker.log' EXIT
+          node --test tests/integration.test.mjs
