@@ -82,6 +82,9 @@ test('verified instructor sees history but student cannot retrieve protected CSV
   const body=await dashboard.text();
   assert.match(body,/Course dashboard/);
   assert.match(body,/Simulation Activity A/);
+  assert.match(body,/Launches by day/);
+  assert.match(body,/Activity summary/);
+  assert.match(body,/Student summary/);
   const exports=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=launches',{headers:{Cookie:cookie}});
   assert.equal(exports.status,200);
   const csv=await exports.text();
