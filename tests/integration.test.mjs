@@ -366,7 +366,7 @@ test('Canvas API errors and redirects fail safely without preventing an optional
   }
 });
 
-test('identity export keyset retains all 400+ codes even for one user with duplicate code across scopes',async()=>{
+test('identity export keyset retains all 900 rows including 450 codes owned by one user',async()=>{
   // These identities are seeded in the local D1 for deterministic cursor-boundary testing.
   const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
   assert.equal(teacher.post.status,200);
@@ -378,5 +378,8 @@ test('identity export keyset retains all 400+ codes even for one user with dupli
     assert.ok(csv.includes('cursor-student-'+suffix),'Missing identity export row '+suffix);
   }
   const lines=csv.trim().split('\r\n').filter(line=>line.includes('cursor-student-'));
-  assert.equal(lines.length,450,'Identity cursor must not drop or duplicate boundary rows');
+  assert.equal(lines.length,900,'Identity cursor must not drop or duplicate boundary rows');
+  for(const suffix of ['000','399','400','449'])assert.ok(csv.includes('U_shared_'+suffix),'Missing activity-scoped code '+suffix);
+  const shared=lines.filter(line=>line.startsWith('"cursor-student-000"'));
+  assert.equal(shared.length,451,'All codes from the same user must survive cross-page continuation');
 });

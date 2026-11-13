@@ -35,6 +35,7 @@ const vars = [
 ].join('\n');
 if (!existsSync('.dev.vars')) writeFileSync('.dev.vars', vars, { mode: 0o600 });
 const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+const recent = new Date().toISOString();
 const bootstrap = [
   "INSERT OR IGNORE INTO deployments(id,institution,issuer,client_id,deployment_id,auth_url,jwks_url) VALUES('sim-1','sim-university','http://localhost:8788','bridge-simulator','sim-deployment','http://localhost:8788/authorize','http://localhost:8788/jwks');",
   "INSERT OR IGNORE INTO deployments(id,institution,issuer,client_id,deployment_id,auth_url,jwks_url) VALUES('sim-2','sim-university','http://localhost:8788','bridge-simulator','second-deployment','http://localhost:8788/authorize','http://localhost:8788/jwks');",
@@ -45,9 +46,14 @@ const bootstrap = [
   "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','student-1','section-1','simulator');",
   "INSERT OR IGNORE INTO section_memberships(deployment_id,course_id,user_id,section_id,source) VALUES('sim-1','course-a','student-1','section-2','simulator');",
   ...Array.from({length:450},(_,i)=>{const user='cursor-student-'+String(i).padStart(3,'0');return [
-    "INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES('sim-1','course-a','"+user+"','Cursor Test',NULL,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+    "INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES('sim-1','course-a','"+user+"','Cursor Test',NULL,'"+recent+"','"+recent+"');",
     "INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES('sim-1','course-a','"+user+"','U_cursor_"+String(i).padStart(3,'0')+"','course','','v1');"
   ]}).flat(),
+  // One individual has hundreds of additional, distinct activity-scoped codes.
+  // The export must advance within the same user rather than skipping on page 2.
+  ...Array.from({length:450},(_,i)=>
+    "INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES('sim-1','course-a','cursor-student-000','U_shared_"+String(i).padStart(3,'0')+"','activity','sim-activity-a','v1');"
+  ),
   "INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES('sim-1','course-a','old-student','Old Student','old-student@example.invalid','2021-01-01T00:00:00.000Z','2021-01-02T00:00:00.000Z');",
   "INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES('sim-1','course-a','old-student','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa','course','','v1');",
   "INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES('00000000-0000-4000-8000-000000000101','historical-test-fingerprint','2021-01-02T00:00:00.000Z','sim-1','sim-university','course-a','C_aaaaaaaaaaaaaaaaaaaaaaaaaaa','U_aaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL,'sim-activity-a','http://localhost:8788','resource:course-a:sim-activity-a','recorded','issued','v1');",
