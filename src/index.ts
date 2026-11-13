@@ -303,7 +303,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
       .bind(randomId(),new Date().toISOString(),deploy,course,session.user,'identity_export',auditDetails).run();
   }
   const encoder=new TextEncoder();
-  let lastTime='',lastId='',lastUser='',lastCode='',finished=false;
+  let lastTime='',lastId='',lastUser='',lastCode='',lastScope='',lastLink='',lastVersion='',finished=false;
   const stream=new ReadableStream<Uint8Array>({
     start(controller){controller.enqueue(encoder.encode(columns.join(',')+'\r\n'));},
     async pull(controller){
@@ -315,11 +315,11 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
           const where=['i.deployment_id=?','i.course_id=?'];
           if(user){where.push('c.user_code=?');values.push(user);}
           if(link){where.push('c.link_id=?');values.push(link);}
-          if(lastUser){where.push('(i.user_id>? OR (i.user_id=? AND c.user_code>?))');values.push(lastUser,lastUser,lastCode);}
+          if(lastUser){where.push('(i.user_id,c.user_code,c.scope,c.link_id,c.key_version)>(?,?,?,?,?)');values.push(lastUser,lastCode,lastScope,lastLink,lastVersion);}
           query='SELECT i.user_id,i.full_name,i.email,c.user_code,c.scope,c.link_id,c.key_version,'+
             '(SELECT group_concat(m.section_id, \';\') FROM section_memberships m WHERE m.deployment_id=i.deployment_id AND m.course_id=i.course_id AND m.user_id=i.user_id) AS section_ids,'+
             'i.first_seen,i.last_seen FROM identities i JOIN identity_codes c ON c.deployment_id=i.deployment_id AND c.course_id=i.course_id AND c.user_id=i.user_id '+
-            'WHERE '+where.join(' AND ')+' ORDER BY i.user_id,c.user_code LIMIT 400';
+            'WHERE '+where.join(' AND ')+' ORDER BY i.user_id,c.user_code,c.scope,c.link_id,c.key_version LIMIT 400';
         }else{
           const where=['deployment_id=?','course_id=?'];
           if(user){where.push('user_code=?');values.push(user);}
@@ -333,7 +333,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
         if(rows.length===0){finished=true;controller.close();return;}
         controller.enqueue(encoder.encode(rows.map(r=>columns.map(c=>csvCell(r[c])).join(',')).join('\r\n')+'\r\n'));
         if(identities){
-          const last=rows[rows.length-1];lastUser=String(last.user_id);lastCode=String(last.user_code);
+          const last=rows[rows.length-1];lastUser=String(last.user_id);lastCode=String(last.user_code);lastScope=String(last.scope);lastLink=String(last.link_id);lastVersion=String(last.key_version);
         }else{
           const last=rows[rows.length-1];lastTime=String(last.event_time);lastId=String(last.id);
         }

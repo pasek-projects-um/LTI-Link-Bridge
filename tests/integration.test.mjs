@@ -365,3 +365,18 @@ test('Canvas API errors and redirects fail safely without preventing an optional
     assert.equal(new URL(result.post.headers.get('location')).searchParams.get('section'),null);
   }
 });
+
+test('identity export keyset retains all 400+ codes even for one user with duplicate code across scopes',async()=>{
+  // These identities are seeded in the local D1 for deterministic cursor-boundary testing.
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const result=await fetch(bridge+'/instructor/export?course=course-a&deployment=sim-1&type=identities',{headers:{Cookie:cookie}});
+  assert.equal(result.status,200);
+  const csv=await result.text();
+  for(const suffix of ['000','399','400','401','449']){
+    assert.ok(csv.includes('"cursor-student-'+suffix+'"'),'Missing identity export row '+suffix);
+  }
+  const lines=csv.trim().split('\r\n').filter(line=>line.includes('"cursor-student-'));
+  assert.equal(lines.length,450,'Identity cursor must not drop or duplicate boundary rows');
+});
