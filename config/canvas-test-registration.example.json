@@ -1,0 +1,12 @@
+{
+  "institution": "REPLACE_WITH_INSTITUTION",
+  "issuer": "https://REPLACE_WITH_TEST_CANVAS_ORIGIN",
+  "client_id": "REPLACE_WITH_CLIENT_ID",
+  "deployment_id": "REPLACE_WITH_DEPLOYMENT_ID",
+  "auth_url": "https://REPLACE_WITH_TEST_CANVAS_ORIGIN/api/lti/authorize_redirect",
+  "jwks_url": "https://REPLACE_WITH_TEST_CANVAS_ORIGIN/api/lti/security/jwks",
+  "canvas_api_origin": "https://REPLACE_WITH_TEST_CANVAS_ORIGIN",
+  "login_url": "https://REPLACE_WITH_APPROVED_TEST_HOST/lti/login",
+  "launch_url": "https://REPLACE_WITH_APPROVED_TEST_HOST/lti/launch",
+  "jwks_tool_url": "https://REPLACE_WITH_APPROVED_TEST_HOST/lti/jwks"
+}

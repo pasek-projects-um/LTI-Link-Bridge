@@ -14,6 +14,10 @@ A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to i
 
 This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. institutional Canvas API token provisioning, institution-specific destination-server integration, identity administration beyond manual section mappings, additional iframe/browser compatibility testing, institutional provisioning, approved retention policy and production validation remain unfinished. The dashboard shows timestamps in the instructor browser's local time zone (with a UTC fallback) and uses 100-row paging; CSV exports retain UTC and stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
 
+## Controlled institutional test readiness
+
+A production-style, **offline** configuration preflight and non-secret example registration files are available in `scripts/preflight.mjs` and `config/`. Run `npm run preflight -- --config <test-config.json> --registration <non-secret-registration.json>` before requesting a test Canvas registration. This does not deploy, verify credentials or authorize use of student data. The detailed ITS handoff and browser acceptance checklist are in [ITS-INTEGRATION.md](ITS-INTEGRATION.md).
+
 ## Install and local start
 
 1. Install Node.js 20+; run `npm install`.

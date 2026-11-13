@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --local",
-    "test": "node --test tests/crypto.test.mjs tests/sdk.test.mjs",
+    "test": "node --test tests/crypto.test.mjs tests/sdk.test.mjs tests/preflight.test.mjs",
     "typecheck": "tsc --noEmit",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "simulator:setup": "node simulator/setup.mjs",
-    "test:integration": "node --test tests/integration.test.mjs"
+    "test:integration": "node --test tests/integration.test.mjs",
+    "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
     "jose": "^6.0.0"
