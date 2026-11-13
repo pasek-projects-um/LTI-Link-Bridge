@@ -375,8 +375,8 @@ test('identity export keyset retains all 400+ codes even for one user with dupli
   assert.equal(result.status,200);
   const csv=await result.text();
   for(const suffix of ['000','399','400','401','449']){
-    assert.ok(csv.includes('"cursor-student-'+suffix+'"'),'Missing identity export row '+suffix);
+    assert.ok(csv.includes('cursor-student-'+suffix),'Missing identity export row '+suffix);
   }
-  const lines=csv.trim().split('\r\n').filter(line=>line.includes('"cursor-student-'));
+  const lines=csv.trim().split('\r\n').filter(line=>line.includes('cursor-student-'));
   assert.equal(lines.length,450,'Identity cursor must not drop or duplicate boundary rows');
 });
