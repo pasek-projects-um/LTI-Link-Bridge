@@ -209,16 +209,18 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
     link:link.forward_link?link.id:undefined,launch:link.forward_launch?eventId:undefined
   });
   const fp=await fingerprint(token);
+  // A launch record must be inserted before any protected mapping changes:
+  // this avoids updating a student's last_seen on a duplicate/replayed token.
+  // D1 batch executes transactionally, so a failed launch aborts all writes.
   try {
-    await env.DB.batch([
+    const changes=await env.DB.batch([
+      env.DB.prepare('INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(eventId,fp,at,reg.id,reg.institution,course,courseCode,userCode,sectionCode,link.id,origin,resource,'recorded','issued',version),
       env.DB.prepare('INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)').bind(reg.id,course,user,typeof claims.name==='string'?claims.name:null,typeof claims.email==='string'?claims.email:null,at,at),
       env.DB.prepare('UPDATE identities SET last_seen=? WHERE deployment_id=? AND course_id=? AND user_id=?').bind(at,reg.id,course,user),
-      env.DB.prepare('INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES(?,?,?,?,?,?,?)').bind(reg.id,course,user,userCode,link.user_scope,link.user_scope==='activity'?link.id:'',version),
-      env.DB.prepare('INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(eventId,fp,at,reg.id,reg.institution,course,courseCode,userCode,sectionCode,link.id,origin,resource,'recorded','issued',version)
+      env.DB.prepare('INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES(?,?,?,?,?,?,?)').bind(reg.id,course,user,userCode,link.user_scope,link.user_scope==='activity'?link.id:'',version)
     ]);
+    if(changes[0].meta.changes!==1)return error(409,'This LTI token has already been processed; launch again from Canvas');
   }catch {return error(503,'Launch could not be logged; destination not opened');}
-  const existing=await env.DB.prepare('SELECT id FROM launches WHERE token_fingerprint=?').bind(fp).first<{id:string}>();
-  if(existing?.id!==eventId)return error(409,'This LTI token has already been processed; launch again from Canvas');
   return response('',303,'text/plain',{'Location':target});
 }
 async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration):Promise<Response>{
