@@ -17,7 +17,8 @@ export async function runRetention(env:RetentionEnv,now=Date.now()):Promise<void
   await env.DB.batch([
     env.DB.prepare('DELETE FROM oidc_states WHERE state IN (SELECT state FROM oidc_states WHERE expires_at<? LIMIT 1000)').bind(unix),
     env.DB.prepare('DELETE FROM instructor_tickets WHERE ticket IN (SELECT ticket FROM instructor_tickets WHERE expires_at<? LIMIT 1000)').bind(unix),
-    env.DB.prepare('DELETE FROM deep_link_contexts WHERE challenge IN (SELECT challenge FROM deep_link_contexts WHERE expires_at<? LIMIT 1000)').bind(unix)
+    env.DB.prepare('DELETE FROM deep_link_contexts WHERE challenge IN (SELECT challenge FROM deep_link_contexts WHERE expires_at<? LIMIT 1000)').bind(unix),
+    env.DB.prepare('DELETE FROM live_code_challenges WHERE ticket IN (SELECT ticket FROM live_code_challenges WHERE expires_at<? LIMIT 1000)').bind(unix)
   ]);
   if(env.RETENTION_ENABLED!=='1')return;
   const launchDays=days('RETENTION_LAUNCH_DAYS',env.RETENTION_LAUNCH_DAYS,30);
