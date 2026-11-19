@@ -23,9 +23,17 @@ export interface NewLiveSession {
 export function generateClassCode(): string {
   // 10 base32 characters: 50 random bits, grouped for classroom readability.
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const bytes = crypto.getRandomValues(new Uint8Array(10));
-  const chars = Array.from(bytes, n => alphabet[n % alphabet.length]).join('');
-  return chars.slice(0,5)+'-'+chars.slice(5);
+  // Rejection sampling avoids modulo bias while retaining 50 random bits.
+  const chars: string[]=[];
+  while(chars.length<10){
+    const bytes=crypto.getRandomValues(new Uint8Array(16));
+    for(const value of bytes){
+      if(value>=Math.floor(256/alphabet.length)*alphabet.length)continue;
+      chars.push(alphabet[value%alphabet.length]);
+      if(chars.length===10)break;
+    }
+  }
+  return chars.slice(0,5).join('')+'-'+chars.slice(5).join('');
 }
 
 export function normalizeClassCode(code: string): string {
@@ -120,7 +128,11 @@ export async function admitStudent(
   const attempts=await db.prepare(`SELECT COUNT(*) AS total FROM live_code_attempts
     WHERE session_id=? AND user_code=? AND attempted_at>=? AND result!='accepted'`)
     .bind(session.id,fields.userCode,since).first<{total:number}>();
-  if((attempts?.total||0)>=5)return {status:'rate_limited'};
+  if((attempts?.total||0)>=5){
+    await db.prepare('INSERT INTO live_code_attempts(id,session_id,user_code,attempted_at,result) VALUES(?,?,?,?,?)')
+      .bind(randomId(),time.toISOString(),fields.userCode,time.toISOString(),'rate_limited').run();
+    return {status:'rate_limited'};
+  }
 
   const valid=validClassCode(fields.code) &&
     await digestCode(secret,session.code_salt,fields.code)===session.code_hash;
