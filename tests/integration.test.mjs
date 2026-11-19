@@ -588,3 +588,34 @@ test('simultaneous reusable launches resolve to the same committed generation',a
   assert.equal(urls[0].searchParams.get('generation'),urls[1].searchParams.get('generation'));
   assert.notEqual(urls[0].searchParams.get('launch'),urls[1].searchParams.get('launch'));
 });
+
+test('every verified single-use click is visible even when only one launch succeeds',async()=>{
+  const link=await createActivityWithMode('once_per_student');
+  const student='tracked-repeat-student';
+  const first=await launch({user:student,link});
+  const second=await launch({user:student,link});
+  const third=await launch({user:student,link});
+  assert.deepEqual([first.post.status,second.post.status,third.post.status],[303,409,409]);
+
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const query=new URLSearchParams({course:'course-a',deployment:'sim-1',link});
+  const dashboard=await fetch(bridge+'/instructor?'+query,{headers:{Cookie:cookie}});
+  assert.equal(dashboard.status,200);
+  const page=await dashboard.text();
+  assert.match(page,/verified click attempts/i);
+  assert.match(page,/blocked_single_use/);
+
+  const attempts=await fetch(bridge+'/instructor/export?'+query+'&type=attempts',{headers:{Cookie:cookie}});
+  assert.equal(attempts.status,200);
+  const csv=await attempts.text();
+  const lines=csv.trim().split(/\r?\n/);
+  assert.equal(lines.length,4,'Three click attempts plus CSV header');
+  assert.equal(lines.filter(line=>line.includes('blocked_single_use')).length,2);
+  assert.equal(lines.filter(line=>line.includes('launched')).length,1);
+
+  const launches=await fetch(bridge+'/instructor/export?'+query+'&type=launches',{headers:{Cookie:cookie}});
+  assert.equal(launches.status,200);
+  assert.equal((await launches.text()).trim().split(/\r?\n/).length,2,
+    'Only the accepted click creates a successful launch');
+});
