@@ -2,6 +2,14 @@
 
 A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to instructor-approved external activities with keyed pseudonyms and durable per-launch logs. Cloudflare Workers + D1 + TypeScript. Not yet suitable for storing real student records or for institutional registration.
 
+## Canvas scheduling and click tracking
+
+**Canvas is the source of truth for assignment scheduling.** Instructors configure due dates, availability windows, differentiated assignment recipients, publishing, and module access in Canvas, not in the bridge. For assignment-style placement, use a Canvas external-tool assignment with the bridge's LTI Deep Linking workflow when supported by the institution. The bridge does not create Canvas assignments, fetch effective per-student due dates, submit grades, or independently enforce Canvas deadlines. A student who already has a destination URL may be able to revisit that external website without going through Canvas.
+
+The bridge records **every authenticated resource-launch attempt that reaches its generation-policy check** in `launch_attempts`, including repeat clicks blocked by once-per-student rules. The instructor dashboard and CSV export distinguish **verified click attempts**, **successful launches**, and **generations**. A Canvas-blocked click (unpublished assignment, unavailable date, inaccessible module) never reaches the bridge and cannot be counted by it. Nor can it count visits made directly to the destination without a fresh LTI launch.
+
+Single-use and reuse rules are scoped to the **Canvas placement**, so two assignments referencing the same activity definition do not share a student's quota or generation. The resource-link ID is supplied by signed Canvas LTI claims, not by student-controlled query parameters. New migrations `0010_launch_attempts.sql` and `0011_placement_scoped_generations.sql` add click history and placement-specific generation identity. Click-attempt records follow the institution-approved launch retention period.
+
 ## Activity generation policies
 
 Every activity has a **per-student generation policy**, selected when the instructor creates the Canvas link:
@@ -12,7 +20,7 @@ Every activity has a **per-student generation policy**, selected when the instru
 | **Reusable: reopen the same generation** | Create one generation and redirect | Redirect with the **same** generation ID but a new launch ID |
 | **Reusable: new generation each time** | Create a new generation and redirect | Redirect with a **new** generation ID and a new launch ID |
 
-These limits apply separately to each verified Canvas student **and** activity, even if an activity uses a globally scoped pseudonymous user code. The application uses the authenticated Canvas user ID internally for this enforcement; it never trusts a query-string student ID.
+These limits apply separately to each verified Canvas student **and Canvas placement**, even if an activity uses a globally scoped pseudonymous user code. The application uses the authenticated Canvas user ID internally for this enforcement; it never trusts a query-string student ID.
 
 A **generation** identifies one activity attempt or instance. A **launch** identifies a particular successful Canvas visit. The stable pseudonymous **user** code still identifies the student according to the activity's selected code scope. The destination receives a `generation` parameter in addition to any enabled `user`, `course`, `section`, `link`, and `launch` parameters. For a destination to reopen an existing attempt, **the destination application must actually recognize and store the generation ID**. The bridge cannot force an arbitrary external website to restore its prior state.
 
