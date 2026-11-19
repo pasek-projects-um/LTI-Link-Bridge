@@ -5,6 +5,7 @@ import { runRetention } from './retention.ts';
 import { dashboardScript } from './dashboard-script.ts';
 import { lookupCanvasSections } from './canvas.ts';
 import { isGenerationMode, generationModeLabel, type GenerationMode } from './generation-policy.ts';
+import { recordVerifiedLaunch } from './launch-recording.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
@@ -210,79 +211,48 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
     'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
   ).bind(reg.id,course,link.id,user,'stable-%').first<{generation_id:string}>();
   const generationId=existingGeneration?.generation_id || (generationMode==='new_each_time'?'gen-':'stable-')+randomId();
-  const fp=await fingerprint(token);
+  const launchDetails = {
+    deploymentId: reg.id,
+    institution: reg.institution,
+    courseId: course,
+    canvasUserId: user,
+    fullName: typeof claims.name==='string'?claims.name:null,
+    email: typeof claims.email==='string'?claims.email:null,
+    linkId: link.id,
+    userScope: String(link.user_scope),
+    keyVersion: version,
+    courseCode,
+    userCode,
+    sectionCode,
+    resourceLinkId: resource,
+    destinationOrigin: origin,
+    tokenFingerprint: await fingerprint(token),
+    launchId: eventId,
+    generationId,
+    generationMode,
+    occurredAt: at
+  };
+
+  let recorded;
   try {
-    // D1 executes the batch as one transaction. A stable generation row is
-    // created only once per student/activity; new-each-time uses a fresh row.
-    const statements = [
-      env.DB.prepare(`INSERT OR IGNORE INTO link_generations
-        (generation_id,deployment_id,course_id,link_id,user_id,created_at)
-        VALUES(?,?,?,?,?,?)`).bind(generationId,reg.id,course,link.id,user,at)
-    ];
-
-    // Another simultaneous first launch may have created the stable row.
-    // The database, not the earlier read, is authoritative.
-    const generationSelector = generationMode==='new_each_time'
-      ? 'generation_id=?'
-      : "deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE 'stable-%'";
-    const generationArgs = generationMode==='new_each_time'
-      ? [generationId]
-      : [reg.id,course,link.id,user];
-
-    statements.push(env.DB.prepare(`UPDATE link_generations
-      SET use_count=use_count+1,last_launch_id=?
-      WHERE ${generationSelector} AND (? != 'once_per_student' OR use_count=0)`)
-      .bind(eventId,...generationArgs,generationMode));
-
-    // The reservation must belong to THIS launch. This prevents a second
-    // simultaneous launch from bypassing a once-per-student restriction.
-    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO launches
-      (id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,
-       user_code,section_code,link_id,destination_origin,resource_link_id,status,
-       redirect_status,key_version,generation_id)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,generation_id FROM link_generations
-      WHERE ${generationSelector} AND last_launch_id=?`)
-      .bind(eventId,fp,at,reg.id,reg.institution,course,courseCode,userCode,sectionCode,
-        link.id,origin,resource,'recorded','issued',version,...generationArgs,eventId));
-
-    statements.push(
-      env.DB.prepare(`INSERT OR IGNORE INTO identities
-        (deployment_id,course_id,user_id,full_name,email,first_seen,last_seen)
-        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM launches WHERE id=?)`)
-        .bind(reg.id,course,user,typeof claims.name==='string'?claims.name:null,
-          typeof claims.email==='string'?claims.email:null,at,at,eventId),
-      env.DB.prepare(`UPDATE identities SET last_seen=?
-        WHERE deployment_id=? AND course_id=? AND user_id=?
-          AND EXISTS (SELECT 1 FROM launches WHERE id=?)`)
-        .bind(at,reg.id,course,user,eventId),
-      env.DB.prepare(`INSERT OR IGNORE INTO identity_codes
-        (deployment_id,course_id,user_id,user_code,scope,link_id,key_version)
-        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM launches WHERE id=?)`)
-        .bind(reg.id,course,user,userCode,link.user_scope,
-          link.user_scope==='activity'?link.id:'',version,eventId)
-    );
-
-    const results=await env.DB.batch(statements);
-    if(results[2].meta.changes!==1){
-      return error(409,generationMode==='once_per_student'
-        ? 'You have already opened this activity. This link can only be used once per student.'
-        : 'This launch has already been processed. Launch again from Canvas.');
-    }
+    recorded=await recordVerifiedLaunch(env.DB,launchDetails);
   }catch {
     return error(503,'Launch could not be logged; destination not opened');
   }
-  // Read the committed generation ID, not the speculative ID from before
-  // the transaction. This also handles two simultaneous first visits.
-  const recorded=await env.DB.prepare('SELECT generation_id FROM launches WHERE id=?')
-    .bind(eventId).first<{generation_id:string}>();
-  if(!recorded?.generation_id)return error(503,'Launch generation could not be confirmed');
+  if(recorded.status==='already_used'){
+    return error(409,'You have already opened this activity. This link can only be used once per student.');
+  }
+  if(recorded.status==='duplicate_launch'){
+    return error(409,'This launch has already been processed. Launch again from Canvas.');
+  }
+
   const target=buildDestination(link.destination,{
     user:link.forward_user?userCode:undefined,
     course:link.forward_course?courseCode:undefined,
     section:link.forward_section?sectionCode||undefined:undefined,
     link:link.forward_link?link.id:undefined,
     launch:link.forward_launch?eventId:undefined,
-    generation:recorded.generation_id
+    generation:recorded.generationId
   });
   return response('',303,'text/plain',{'Location':target});
 }
