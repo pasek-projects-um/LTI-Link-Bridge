@@ -6,7 +6,7 @@ import { dashboardScript } from './dashboard-script.ts';
 import { lookupCanvasSections } from './canvas.ts';
 import { isGenerationMode, generationModeLabel, type GenerationMode } from './generation-policy.ts';
 import { recordVerifiedLaunch } from './launch-recording.ts';
-import { createLiveSession, getOpenLiveSession, getLatestLiveSession, admittedToSession, admitStudent, closeLiveSession, resumableSession, type LiveSession } from './live-sessions.ts';
+import { createLiveSession, getOpenLiveSession, getLatestLiveSession, admittedToSession, admitStudent, closeLiveSession, type LiveSession } from './live-sessions.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
@@ -177,7 +177,7 @@ async function refreshCanvasMembership(env:Env,reg:Registration,course:string,us
   }
 }
 /**
- * A code request uses a short, signed one-use continuation ticket.
+ * A code request uses a random, one-use database-backed continuation ticket.
  * It is tied to the verified Canvas launch; the browser never supplies the
  * Canvas user identity, session identifier, or activity binding itself.
  */
@@ -213,7 +213,7 @@ async function submitLiveCode(req:Request,env:Env):Promise<Response>{
   const challenge=await env.DB.prepare('SELECT * FROM live_code_challenges WHERE ticket=?')
     .bind(ticket).first<{ticket:string;deployment_id:string;course_id:string;link_id:string;
       resource_link_id:string;user_id:string;user_code:string;session_id:string;
-      expires_at:number;consumed_at:number|null;initial_token_fingerprint:string|null}>();
+      expires_at:number;consumed_at:number|null}>();
   if(!challenge||challenge.consumed_at!==null||challenge.expires_at<Math.floor(Date.now()/1000))
     return error(403,'Expired or previously used live-session ticket');
   const result=await admitStudent(env.DB,env.SESSION_SECRET,{
@@ -228,8 +228,8 @@ async function submitLiveCode(req:Request,env:Env):Promise<Response>{
     WHERE ticket=? AND consumed_at IS NULL AND expires_at>=?`)
     .bind(Math.floor(Date.now()/1000),ticket,Math.floor(Date.now()/1000)).run();
   if(used.meta.changes!==1)return error(409,'Ticket already used. Launch again from Canvas.');
-  // Return students through Canvas for a fresh signed LTI launch, instead of
-  // relying on an unauthenticated redirect to the destination.
+  // A fresh Canvas launch supplies the authenticated identity, records a
+  // separate click, and enforces the configured generation policy.
   return response(html('Live admission confirmed',
     '<p>Code accepted. You are admitted to this live class session.</p>'+
     '<p>Return to the activity in Canvas and open it again. You will not need to enter the code again for this session.</p>'));
