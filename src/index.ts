@@ -375,7 +375,7 @@ async function manageSections(req:Request,env:Env):Promise<Response>{
     if(origin&&origin!==url.origin)return error(403,'Cross-origin section update refused');
     if(fields.csrf!==csrf)return error(403,'Invalid section form token');
     const user=(fields.user_id||'').trim(),section=(fields.section_id||'').trim();
-    if(!user||!section||user.length>150||section.length>150||/[\r\n\0]/.test(user+section))
+    if(!/^[A-Za-z0-9_-]{1,150}$/.test(user)||!/^[A-Za-z0-9_-]{1,150}$/.test(section))
       return error(400,'Invalid user or section identifier');
     const found=await env.DB.prepare('SELECT user_id FROM identities WHERE deployment_id=? AND course_id=? AND user_id=?')
       .bind(deploy,course,user).first();
@@ -506,6 +506,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data))return error(403,'Invalid form token');
     if(!form.title?.trim()||!form.destination)return error(400,'Title and destination required');
     if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(400,'Unapproved destination');
+    if(form.title.trim().length>120)return error(400,'Activity name must be 120 characters or fewer');
     if(returnUrl && !env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
     if(returnUrl){
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();
