@@ -2,17 +2,17 @@
 
 A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to instructor-approved external activities with keyed pseudonyms and durable per-launch logs. Cloudflare Workers + D1 + TypeScript. Not yet suitable for storing real student records or for institutional registration.
 
-## Current implementation (initial milestone)
+## Current implementation (development candidate)
 
 - OIDC initiation, state and nonce storage, signature and claim verification using `jose`, issuer/audience/deployment validation.
 - Stable versioned HMAC-SHA-256 pseudonyms for user (global/course/activity scopes), course, and instructor-managed sections.
 - Verified resource launches, allowed HTTPS destinations, query preservation, D1 launch and protected identity writes before issuing a 303 redirect.
 - Instructor-scoped dashboard, a link-creation screen, CSV export, and Deep Linking response signing (requires an RSA key).
-- Preliminary local-independent identifier smoke tests.
+- Automated local simulator integration coverage for signed OIDC, Deep Linking, placement conflicts, invalid requests, replay, access boundaries, and large identity exports.
 
 ## Important current limitations
 
-This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. institutional Canvas API token provisioning, institution-specific destination-server integration, identity administration beyond manual section mappings, additional iframe/browser compatibility testing, institutional provisioning, approved retention policy and production validation remain unfinished. The dashboard shows timestamps in the instructor browser's local time zone (with a UTC fallback) and uses 100-row paging; CSV exports retain UTC and stream with keyset pagination rather than truncating at 100,000 rows. In particular, the current link resource-association mechanism should be hardened against copy/forgery across placements before production. **Never put production credentials or student data into this initial implementation.**
+This is **not a completed or security-reviewed LTI installation**. Local signed Canvas simulator and integration tests are now available. institutional Canvas API token provisioning, institution-specific destination-server integration, identity administration beyond manual section mappings, additional iframe/browser compatibility testing, institutional provisioning, approved retention policy and production validation remain unfinished. The dashboard shows timestamps in the instructor browser's local time zone (with a UTC fallback) and uses 100-row paging; CSV exports retain UTC and stream with keyset pagination rather than truncating at 100,000 rows. Resource placement binding is now checked against prior mappings, including concurrent initial launches, but behavior with actual Canvas course-copy operations still requires testing in a registered Canvas development environment. **Never put production credentials or student data into this initial implementation.**
 
 ## Controlled institutional test readiness
 
