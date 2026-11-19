@@ -4,6 +4,7 @@ import { isLocalDevelopment, validatedDeepLinkReturn } from './policy.ts';
 import { runRetention } from './retention.ts';
 import { dashboardScript } from './dashboard-script.ts';
 import { lookupCanvasSections } from './canvas.ts';
+import { isGenerationMode, generationModeLabel, type GenerationMode } from './generation-policy.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
@@ -13,6 +14,7 @@ interface Env {
 }
 type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null;canvas_api_origin?:string|null};
 type Launch = Record<string,any>;
+type ActivityLink = Launch & {generation_mode?:GenerationMode};
 const courseClaim = LTI + 'context';
 const resourceClaim = LTI + 'resource_link';
 const deploymentClaim = LTI + 'deployment_id';
@@ -180,8 +182,8 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   // claim from another placement must never silently rebind that resource.
   if(bound && configured && bound.link_id!==configured)return error(403,'Conflicting resource binding');
   const link=configured
-    ? await env.DB.prepare('SELECT * FROM links WHERE id=? AND course_id=? AND deployment_id=?').bind(configured,course,reg.id).first<Launch>()
-    : await env.DB.prepare('SELECT links.* FROM links JOIN link_resources r ON r.link_id=links.id WHERE r.deployment_id=? AND r.course_id=? AND r.resource_link_id=?').bind(reg.id,course,resource).first<Launch>();
+    ? await env.DB.prepare('SELECT * FROM links WHERE id=? AND course_id=? AND deployment_id=?').bind(configured,course,reg.id).first<ActivityLink>()
+    : await env.DB.prepare('SELECT links.* FROM links JOIN link_resources r ON r.link_id=links.id WHERE r.deployment_id=? AND r.course_id=? AND r.resource_link_id=?').bind(reg.id,course,resource).first<ActivityLink>();
   if(!link)return error(403,'Resource link has no authorized destination');
   if(bound && bound.link_id!==link.id)return error(403,'Conflicting resource binding');
   if(!bound){
@@ -203,24 +205,78 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   if(link.section_required && !sectionCode)return error(409,'Section membership unresolved');
   // Resolved sections remain in protected launch records even when forwarding is off.
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
+  const generationMode=isGenerationMode(link.generation_mode)?link.generation_mode:'new_each_time';
+  const existingGeneration=generationMode==='new_each_time'?null:await env.DB.prepare(
+    'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
+  ).bind(reg.id,course,link.id,user,'stable-%').first<{generation_id:string}>();
+  const generationId=existingGeneration?.generation_id || (generationMode==='new_each_time'?'gen-':'stable-')+randomId();
   const target=buildDestination(link.destination,{
     user:link.forward_user?userCode:undefined,course:link.forward_course?courseCode:undefined,
     section:link.forward_section?sectionCode||undefined:undefined,
-    link:link.forward_link?link.id:undefined,launch:link.forward_launch?eventId:undefined
+    link:link.forward_link?link.id:undefined,launch:link.forward_launch?eventId:undefined,
+    generation:generationId
   });
   const fp=await fingerprint(token);
-  // A launch record must be inserted before any protected mapping changes:
-  // this avoids updating a student's last_seen on a duplicate/replayed token.
-  // D1 batch executes transactionally, so a failed launch aborts all writes.
   try {
-    const changes=await env.DB.batch([
-      env.DB.prepare('INSERT OR IGNORE INTO launches(id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,user_code,section_code,link_id,destination_origin,resource_link_id,status,redirect_status,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(eventId,fp,at,reg.id,reg.institution,course,courseCode,userCode,sectionCode,link.id,origin,resource,'recorded','issued',version),
-      env.DB.prepare('INSERT OR IGNORE INTO identities(deployment_id,course_id,user_id,full_name,email,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)').bind(reg.id,course,user,typeof claims.name==='string'?claims.name:null,typeof claims.email==='string'?claims.email:null,at,at),
-      env.DB.prepare('UPDATE identities SET last_seen=? WHERE deployment_id=? AND course_id=? AND user_id=?').bind(at,reg.id,course,user),
-      env.DB.prepare('INSERT OR IGNORE INTO identity_codes(deployment_id,course_id,user_id,user_code,scope,link_id,key_version) VALUES(?,?,?,?,?,?,?)').bind(reg.id,course,user,userCode,link.user_scope,link.user_scope==='activity'?link.id:'',version)
-    ]);
-    if(changes[0].meta.changes!==1)return error(409,'This LTI token has already been processed; launch again from Canvas');
-  }catch {return error(503,'Launch could not be logged; destination not opened');}
+    // D1 executes the batch as one transaction. A stable generation row is
+    // created only once per student/activity; new-each-time uses a fresh row.
+    const statements = [
+      env.DB.prepare(`INSERT OR IGNORE INTO link_generations
+        (generation_id,deployment_id,course_id,link_id,user_id,created_at)
+        VALUES(?,?,?,?,?,?)`).bind(generationId,reg.id,course,link.id,user,at)
+    ];
+
+    // Another simultaneous first launch may have created the stable row.
+    // The database, not the earlier read, is authoritative.
+    const generationSelector = generationMode==='new_each_time'
+      ? 'generation_id=?'
+      : "deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE 'stable-%'";
+    const generationArgs = generationMode==='new_each_time'
+      ? [generationId]
+      : [reg.id,course,link.id,user];
+
+    statements.push(env.DB.prepare(`UPDATE link_generations
+      SET use_count=use_count+1,last_launch_id=?
+      WHERE ${generationSelector} AND (? != 'once_per_student' OR use_count=0)`)
+      .bind(eventId,...generationArgs,generationMode));
+
+    // The reservation must belong to THIS launch. This prevents a second
+    // simultaneous launch from bypassing a once-per-student restriction.
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO launches
+      (id,token_fingerprint,event_time,deployment_id,institution,course_id,course_code,
+       user_code,section_code,link_id,destination_origin,resource_link_id,status,
+       redirect_status,key_version,generation_id)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,generation_id FROM link_generations
+      WHERE ${generationSelector} AND last_launch_id=?`)
+      .bind(eventId,fp,at,reg.id,reg.institution,course,courseCode,userCode,sectionCode,
+        link.id,origin,resource,'recorded','issued',version,...generationArgs,eventId));
+
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO identities
+        (deployment_id,course_id,user_id,full_name,email,first_seen,last_seen)
+        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM launches WHERE id=?)`)
+        .bind(reg.id,course,user,typeof claims.name==='string'?claims.name:null,
+          typeof claims.email==='string'?claims.email:null,at,at,eventId),
+      env.DB.prepare(`UPDATE identities SET last_seen=?
+        WHERE deployment_id=? AND course_id=? AND user_id=?
+          AND EXISTS (SELECT 1 FROM launches WHERE id=?)`)
+        .bind(at,reg.id,course,user,eventId),
+      env.DB.prepare(`INSERT OR IGNORE INTO identity_codes
+        (deployment_id,course_id,user_id,user_code,scope,link_id,key_version)
+        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM launches WHERE id=?)`)
+        .bind(reg.id,course,user,userCode,link.user_scope,
+          link.user_scope==='activity'?link.id:'',version,eventId)
+    );
+
+    const results=await env.DB.batch(statements);
+    if(results[2].meta.changes!==1){
+      return error(409,generationMode==='once_per_student'
+        ? 'You have already opened this activity. This link can only be used once per student.'
+        : 'This launch has already been processed. Launch again from Canvas.');
+    }
+  }catch {
+    return error(503,'Launch could not be logged; destination not opened');
+  }
   return response('',303,'text/plain',{'Location':target});
 }
 async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration):Promise<Response>{
@@ -278,7 +334,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   if(until){where.push('l.event_time<=?');values.push(until);}
   const clause=where.join(' AND ');
   const counts=await env.DB.prepare(`SELECT COUNT(*) AS total,COUNT(DISTINCT user_code) AS students,COUNT(DISTINCT link_id) AS links,MIN(event_time) AS first_launch,MAX(event_time) AS last_launch, SUM(CASE WHEN EXISTS (SELECT 1 FROM arrival_events ae WHERE ae.launch_id=l.id AND ae.event_type='opened') THEN 1 ELSE 0 END) AS confirmed_arrivals FROM launches l WHERE ${clause}`).bind(...values).first<Record<string,unknown>>();
-  const rows=await env.DB.prepare(`SELECT l.id,l.event_time,l.user_code,l.link_id,links.title,l.section_code,l.redirect_status,(SELECT MIN(ae.received_at) FROM arrival_events ae WHERE ae.launch_id=l.id AND ae.event_type='opened') AS destination_opened_at FROM launches l JOIN links ON links.id=l.link_id WHERE ${clause} ORDER BY l.event_time DESC LIMIT 100 OFFSET ?`).bind(...values,(page-1)*100).all<Record<string,unknown>>();
+  const rows=await env.DB.prepare(`SELECT l.id,l.event_time,l.user_code,l.link_id,l.generation_id,links.title,l.section_code,l.redirect_status,(SELECT MIN(ae.received_at) FROM arrival_events ae WHERE ae.launch_id=l.id AND ae.event_type='opened') AS destination_opened_at FROM launches l JOIN links ON links.id=l.link_id WHERE ${clause} ORDER BY l.event_time DESC LIMIT 100 OFFSET ?`).bind(...values,(page-1)*100).all<Record<string,unknown>>();
   const links=await env.DB.prepare('SELECT id,title FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at DESC').bind(deploy,course).all<{id:string;title:string}>();
   const byDay=await env.DB.prepare('SELECT substr(l.event_time,1,10) AS day,COUNT(*) AS total FROM launches l WHERE '+clause+' GROUP BY substr(l.event_time,1,10) ORDER BY day DESC LIMIT 30').bind(...values).all<{day:string;total:number}>();
   const byActivity=await env.DB.prepare('SELECT l.link_id,links.title,COUNT(*) AS total,COUNT(DISTINCT l.user_code) AS students FROM launches l JOIN links ON links.id=l.link_id WHERE '+clause+' GROUP BY l.link_id,links.title ORDER BY total DESC,links.title LIMIT 100').bind(...values).all<{link_id:string;title:string;total:number;students:number}>();
@@ -286,7 +342,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
 
   const base=`course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}`;
   const linkOptions=links.results.map(l=>`<option value="${escapeHtml(l.id)}" ${filterLink===l.id?'selected':''}>${escapeHtml(l.title)}</option>`).join('');
-  const tbody=rows.results.map(r=>`<tr><td>${timeCell(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td><td>${r.destination_opened_at?timeCell(r.destination_opened_at):'Not confirmed'}</td></tr>`).join('');
+  const tbody=rows.results.map(r=>`<tr><td>${timeCell(r.event_time)}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.user_code)}</td><td>${escapeHtml(r.generation_id||'legacy')}</td><td>${escapeHtml(r.section_code||'unresolved')}</td><td>${escapeHtml(r.redirect_status)}</td><td>${r.destination_opened_at?timeCell(r.destination_opened_at):'Not confirmed'}</td></tr>`).join('');
   const summaryByDay=byDay.results.map(r=>'<tr><td>'+escapeHtml(r.day)+'</td><td>'+escapeHtml(r.total)+'</td></tr>').join('');
   const summaryByActivity=byActivity.results.map(r=>'<tr><td><a href="/instructor?'+base+'&link='+encodeURIComponent(r.link_id)+'">'+escapeHtml(r.title)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.students)+'</td></tr>').join('');
   const summaryByStudent=byStudent.results.map(r=>'<tr><td><a href="/instructor?'+base+'&user='+encodeURIComponent(r.user_code)+'">'+escapeHtml(r.user_code)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.activities)+'</td><td>'+timeCell(r.last_launch)+'</td></tr>').join('');
@@ -298,7 +354,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
   const exports=`<p><a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Chronological launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -313,7 +369,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
   const since=url.searchParams.get('since')||'',until=url.searchParams.get('until')||'';
   const columns=identities
     ? ['user_id','full_name','email','user_code','scope','link_id','key_version','section_ids','first_seen','last_seen']
-    : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version','destination_opened_at'];
+    : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version','generation_id','destination_opened_at'];
   if(identities){
     const auditDetails=JSON.stringify({scope:'identity_mapping',link:link||null,user:user||null});
     await env.DB.prepare('INSERT INTO audit_events(id,time,deployment_id,course_id,actor_id,action,details) VALUES(?,?,?,?,?,?,?)')
@@ -518,6 +574,8 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(400,'Unapproved destination');
     if(form.title.trim().length>120)return error(400,'Activity name must be 120 characters or fewer');
     if(form.section_required==='on' && form.section!=='on')return error(400,'Section forwarding must be enabled when a section is required');
+    const generationMode=form.generation_mode||'new_each_time';
+    if(!isGenerationMode(generationMode))return error(400,'Invalid activity generation policy');
     if(returnUrl && !env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
     if(returnUrl){
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();
@@ -528,7 +586,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     const existingVersion=await env.DB.prepare('SELECT key_version FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at LIMIT 1').bind(deploy,course).first<{key_version:string}>();
     const keyVersion=existingVersion?.key_version || activeKeyVersion(env);
     keyForVersion(env,keyVersion);
-    const insert=env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion);
+    const insert=env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version,generation_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion,generationMode);
     if(returnUrl){
       // Consume the one-time request and persist its link atomically.
       const changes=await env.DB.batch([
@@ -555,8 +613,10 @@ async function createLink(req:Request,env:Env):Promise<Response>{
   if(returnUrl&&!validDeepContext)return error(403,'Expired, reused, or invalid Deep Linking context');
   if(!returnUrl&&deepChallenge)return error(403,'Invalid Deep Linking context');
   const csrf=await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data,deepChallenge);
+  const generationOptions=(['once_per_student','reuse_generation','new_each_time'] as GenerationMode[])
+    .map(mode=>`<option value="${mode}" ${mode==='new_each_time'?'selected':''}>${generationModeLabel(mode)}</option>`).join('');
   const checked=(name:string,yes:boolean)=>`<label><input type="checkbox" name="${name}" ${yes?'checked':''}> Forward ${name}</label>`;
-  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="deep_challenge" value="${escapeHtml(deepChallenge)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
+  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="deep_challenge" value="${escapeHtml(deepChallenge)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label><label>Activity reuse <select name="generation_mode">${generationOptions}</select></label><p>Once per student blocks repeat visits. Reopen uses the same generation ID on each visit. New generation creates a fresh generation ID on each visit. Every successful visit gets its own launch ID.</p>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
 }
 export default {
   async fetch(req:Request,env:Env):Promise<Response>{
