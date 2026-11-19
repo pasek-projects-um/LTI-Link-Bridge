@@ -34,6 +34,9 @@ export async function runRetention(env:RetentionEnv,now=Date.now()):Promise<void
     "AND c.user_code=l.user_code)) "+
     "ORDER BY i.last_seen,i.user_id LIMIT 300";
   await env.DB.batch([
+    // Attempt records follow the same institution-approved retention period
+    // as successful launches, including blocked single-use attempts.
+    env.DB.prepare('DELETE FROM launch_attempts WHERE attempt_id IN (SELECT attempt_id FROM launch_attempts WHERE attempted_at<? ORDER BY attempted_at,attempt_id LIMIT 300)').bind(launchCutoff),
     env.DB.prepare('DELETE FROM arrival_events WHERE launch_id IN ('+oldestLaunches+')').bind(launchCutoff),
     env.DB.prepare('DELETE FROM launches WHERE id IN ('+oldestLaunches+')').bind(launchCutoff)
   ]);
