@@ -619,3 +619,16 @@ test('every verified single-use click is visible even when only one launch succe
   assert.equal((await launches.text()).trim().split(/\r?\n/).length,2,
     'Only the accepted click creates a successful launch');
 });
+
+test('single-use limits are independent for separate Canvas placements',async()=>{
+  const link=await createActivityWithMode('once_per_student');
+  const student='same-student-two-assignments';
+  const a=await launch({user:student,link,placement:'assignment-a'});
+  const again=await launch({user:student,link,placement:'assignment-a'});
+  const b=await launch({user:student,link,placement:'assignment-b'});
+  assert.deepEqual([a.post.status,again.post.status,b.post.status],[303,409,303]);
+  const first=new URL(a.post.headers.get('location'));
+  const second=new URL(b.post.headers.get('location'));
+  assert.notEqual(first.searchParams.get('generation'),second.searchParams.get('generation'));
+  assert.equal(first.searchParams.get('user'),second.searchParams.get('user'));
+});
