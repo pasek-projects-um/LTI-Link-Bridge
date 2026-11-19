@@ -37,7 +37,7 @@ export type LaunchRecordingResult =
 /**
  * Reserve the generation and record the launch in one D1 transaction.
  *
- * A stable generation belongs to one student and one activity. A fresh
+ * A stable generation belongs to one student and one Canvas placement. A fresh
  * generation belongs to just one launch. Every accepted visit has a distinct
  * launch row, regardless of whether its generation is reused.
  *
@@ -58,16 +58,16 @@ export async function recordVerifiedLaunch(
   const usesFreshGeneration = generationMode === 'new_each_time';
   const generationWhere = usesFreshGeneration
     ? 'generation_id=?'
-    : "deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE 'stable-%'";
+    : "deployment_id=? AND course_id=? AND link_id=? AND resource_link_id=? AND user_id=? AND generation_id LIKE 'stable-%'";
   const generationBindings = usesFreshGeneration
     ? [generationId]
-    : [deploymentId,courseId,linkId,canvasUserId];
+    : [deploymentId,courseId,linkId,resourceLinkId,canvasUserId];
 
   const statements = [
     db.prepare(`INSERT OR IGNORE INTO link_generations
-      (generation_id,deployment_id,course_id,link_id,user_id,created_at)
-      VALUES(?,?,?,?,?,?)`)
-      .bind(generationId,deploymentId,courseId,linkId,canvasUserId,occurredAt),
+      (generation_id,deployment_id,course_id,link_id,resource_link_id,user_id,created_at)
+      VALUES(?,?,?,?,?,?,?)`)
+      .bind(generationId,deploymentId,courseId,linkId,resourceLinkId,canvasUserId,occurredAt),
 
     db.prepare(`UPDATE link_generations
       SET use_count=use_count+1,last_launch_id=?
