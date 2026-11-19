@@ -38,6 +38,7 @@ export async function runRetention(env:RetentionEnv,now=Date.now()):Promise<void
     // Attempt records follow the same institution-approved retention period
     // as successful launches, including blocked single-use attempts.
     env.DB.prepare('DELETE FROM launch_attempts WHERE attempt_id IN (SELECT attempt_id FROM launch_attempts WHERE attempted_at<? ORDER BY attempted_at,attempt_id LIMIT 300)').bind(launchCutoff),
+    env.DB.prepare('DELETE FROM live_code_attempts WHERE id IN (SELECT id FROM live_code_attempts WHERE attempted_at<? ORDER BY attempted_at,id LIMIT 300)').bind(launchCutoff),
     env.DB.prepare('DELETE FROM arrival_events WHERE launch_id IN ('+oldestLaunches+')').bind(launchCutoff),
     env.DB.prepare('DELETE FROM launches WHERE id IN ('+oldestLaunches+')').bind(launchCutoff)
   ]);
