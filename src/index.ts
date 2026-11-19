@@ -508,6 +508,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     if(!form.title?.trim()||!form.destination)return error(400,'Title and destination required');
     if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(400,'Unapproved destination');
     if(form.title.trim().length>120)return error(400,'Activity name must be 120 characters or fewer');
+    if(form.section_required==='on' && form.section!=='on')return error(400,'Section forwarding must be enabled when a section is required');
     if(returnUrl && !env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
     if(returnUrl){
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();
