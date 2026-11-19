@@ -489,7 +489,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const attemptRows=await env.DB.prepare(`SELECT a.attempted_at,a.user_code,a.outcome,a.generation_id,a.live_session_id,
     links.title FROM launch_attempts a JOIN links ON links.id=a.link_id
     WHERE ${attemptWhere} ORDER BY a.attempted_at DESC LIMIT 100 OFFSET ?`)
-    .bind(...values,(page-1)*100).all<{attempted_at:string;user_code:string;outcome:string;generation_id:string|null;title:string}>();
+    .bind(...values,(page-1)*100).all<{attempted_at:string;user_code:string;outcome:string;generation_id:string|null;live_session_id:string|null;title:string}>();
   const links=await env.DB.prepare('SELECT id,title FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at DESC').bind(deploy,course).all<{id:string;title:string}>();
   const byDay=await env.DB.prepare('SELECT substr(l.event_time,1,10) AS day,COUNT(*) AS total FROM launches l WHERE '+clause+' GROUP BY substr(l.event_time,1,10) ORDER BY day DESC LIMIT 30').bind(...values).all<{day:string;total:number}>();
   const byActivity=await env.DB.prepare('SELECT l.link_id,links.title,COUNT(*) AS total,COUNT(DISTINCT l.user_code) AS students,COUNT(DISTINCT l.generation_id) AS generations FROM launches l JOIN links ON links.id=l.link_id WHERE '+clause+' GROUP BY l.link_id,links.title ORDER BY total DESC,links.title LIMIT 100').bind(...values).all<{link_id:string;title:string;total:number;students:number;generations:number}>();
