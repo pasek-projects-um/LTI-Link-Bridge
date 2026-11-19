@@ -2,6 +2,32 @@
 
 A **work-in-progress** institution-agnostic LTI 1.3 Canvas tool for linking to instructor-approved external activities with keyed pseudonyms and durable per-launch logs. Cloudflare Workers + D1 + TypeScript. Not yet suitable for storing real student records or for institutional registration.
 
+## Activity generation policies
+
+Every activity has a **per-student generation policy**, selected when the instructor creates the Canvas link:
+
+| Setting | First Canvas launch | Later launches by the same student |
+| --- | --- | --- |
+| **Once per student** | Create one generation and redirect | Return an explanatory 409 page; do not redirect or create another launch record |
+| **Reusable: reopen the same generation** | Create one generation and redirect | Redirect with the **same** generation ID but a new launch ID |
+| **Reusable: new generation each time** | Create a new generation and redirect | Redirect with a **new** generation ID and a new launch ID |
+
+These limits apply separately to each verified Canvas student **and** activity, even if an activity uses a globally scoped pseudonymous user code. The application uses the authenticated Canvas user ID internally for this enforcement; it never trusts a query-string student ID.
+
+A **generation** identifies one activity attempt or instance. A **launch** identifies a particular successful Canvas visit. The stable pseudonymous **user** code still identifies the student according to the activity's selected code scope. The destination receives a `generation` parameter in addition to any enabled `user`, `course`, `section`, `link`, and `launch` parameters. For a destination to reopen an existing attempt, **the destination application must actually recognize and store the generation ID**. The bridge cannot force an arbitrary external website to restore its prior state.
+
+The instructor dashboard and launch CSV include the generation ID. Older links automatically retain their original behavior (**new generation on every launch**) through migration `0009_link_generations.sql`; historic launches before the migration have no generation ID. Policy changes are configured on new links, not retroactively applied to existing activity placements.
+
+### Code map for maintainers
+
+- `src/index.ts`: signed Canvas launch validation, routing, instructor pages, launch persistence, and exports
+- `src/generation-policy.ts`: named policies, validation, and instructor-facing labels
+- `src/links.ts`: destination URL validation and pseudonymous query parameters
+- `migrations/0009_link_generations.sql`: persistent generation history and per-student reservation index
+- `tests/integration.test.mjs`: signed simulator scenarios for all three policies
+
+**Concurrency rule:** the database transaction, rather than an earlier in-memory check, decides whether a student has consumed a once-per-student link. Every successful visit has its own launch record; refused repeat visits do not open the destination.
+
 ## Current implementation (development candidate)
 
 - OIDC initiation, state and nonce storage, signature and claim verification using `jose`, issuer/audience/deployment validation.
