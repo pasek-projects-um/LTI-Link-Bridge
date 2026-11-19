@@ -38,6 +38,7 @@ function hintFrom(url) {
     link: url.searchParams.get('link') || 'sim-activity-a',
     kind: url.searchParams.get('kind') || 'resource',
     bad: url.searchParams.get('bad') || '',
+    customLink: url.searchParams.get('customLink') || '',
     missing: url.searchParams.get('missing') || '',
     deployment: url.searchParams.get('deployment') || 'sim-deployment'
   };
@@ -47,7 +48,7 @@ async function makeToken(query) {
   const bad = hint.bad;
   const deep = hint.kind === 'deep';
   const now = Math.floor(Date.now() / 1000);
-  const custom = deep || hint.kind === 'dashboard' || hint.missing === 'custom' ? undefined : { bridge_link_id: hint.link };
+  const custom = deep || hint.kind === 'dashboard' || hint.missing === 'custom' ? undefined : { bridge_link_id: hint.customLink || hint.link };
   const claims = {
     nonce: query.get('nonce'),
     [claim + 'version']: '1.3.0',
