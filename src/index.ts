@@ -210,12 +210,6 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
     'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
   ).bind(reg.id,course,link.id,user,'stable-%').first<{generation_id:string}>();
   const generationId=existingGeneration?.generation_id || (generationMode==='new_each_time'?'gen-':'stable-')+randomId();
-  const target=buildDestination(link.destination,{
-    user:link.forward_user?userCode:undefined,course:link.forward_course?courseCode:undefined,
-    section:link.forward_section?sectionCode||undefined:undefined,
-    link:link.forward_link?link.id:undefined,launch:link.forward_launch?eventId:undefined,
-    generation:generationId
-  });
   const fp=await fingerprint(token);
   try {
     // D1 executes the batch as one transaction. A stable generation row is
@@ -277,6 +271,19 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   }catch {
     return error(503,'Launch could not be logged; destination not opened');
   }
+  // Read the committed generation ID, not the speculative ID from before
+  // the transaction. This also handles two simultaneous first visits.
+  const recorded=await env.DB.prepare('SELECT generation_id FROM launches WHERE id=?')
+    .bind(eventId).first<{generation_id:string}>();
+  if(!recorded?.generation_id)return error(503,'Launch generation could not be confirmed');
+  const target=buildDestination(link.destination,{
+    user:link.forward_user?userCode:undefined,
+    course:link.forward_course?courseCode:undefined,
+    section:link.forward_section?sectionCode||undefined:undefined,
+    link:link.forward_link?link.id:undefined,
+    launch:link.forward_launch?eventId:undefined,
+    generation:recorded.generation_id
+  });
   return response('',303,'text/plain',{'Location':target});
 }
 async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration):Promise<Response>{
