@@ -208,8 +208,8 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
   const generationMode=isGenerationMode(link.generation_mode)?link.generation_mode:'new_each_time';
   const existingGeneration=generationMode==='new_each_time'?null:await env.DB.prepare(
-    'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
-  ).bind(reg.id,course,link.id,user,'stable-%').first<{generation_id:string}>();
+    'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND resource_link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
+  ).bind(reg.id,course,link.id,resource,user,'stable-%').first<{generation_id:string}>();
   const generationId=existingGeneration?.generation_id || (generationMode==='new_each_time'?'gen-':'stable-')+randomId();
   const launchDetails = {
     deploymentId: reg.id,
