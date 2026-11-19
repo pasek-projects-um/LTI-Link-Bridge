@@ -488,3 +488,81 @@ test('Deep Linking context is single-use and rejects replays after saving',async
   const again=await fetch(url,{headers:{Cookie:cookie}});
   assert.equal(again.status,403,'Consumed Deep Linking context cannot be reopened');
 });
+
+/**
+ * Create a configured activity using the same instructor workflow as Canvas.
+ * The simulator signs student launches; this helper does not bypass LTI.
+ */
+async function createActivityWithMode(mode) {
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const form=await fetch(bridge+'/instructor/create?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  assert.equal(form.status,200);
+  const html=await form.text();
+  const saved=await fetch(bridge+'/instructor/create',{
+    method:'POST',
+    headers:{Cookie:cookie,Origin:bridge},
+    body:new URLSearchParams({
+      course:'course-a',deployment:'sim-1',return:'',data:'',
+      csrf:hidden(html,'csrf'),title:'Generation policy '+mode,
+      destination:sim+'/activity?keep=yes',scope:'course',
+      user:'on',course_code:'on',link:'on',launch:'on',
+      generation_mode:mode
+    })
+  });
+  assert.equal(saved.status,200);
+  const result=await saved.text();
+  const id=result.match(/Link ID: <code>([^<]+)<\/code>/)?.[1];
+  assert.ok(id,'Created activity must return its link ID');
+  return id;
+}
+
+test('once per student blocks a second use but allows another student',async()=>{
+  const link=await createActivityWithMode('once_per_student');
+  const first=await launch({user:'once-student-a',link});
+  const second=await launch({user:'once-student-a',link});
+  const other=await launch({user:'once-student-b',link});
+  assert.equal(first.post.status,303);
+  assert.equal(second.post.status,409);
+  assert.equal(other.post.status,303);
+  assert.match(new URL(first.post.headers.get('location')).searchParams.get('generation'),/^stable-/);
+});
+
+test('reusable generation retains its identifier across separate launches',async()=>{
+  const link=await createActivityWithMode('reuse_generation');
+  const first=await launch({user:'reuse-student',link});
+  const second=await launch({user:'reuse-student',link});
+  assert.equal(first.post.status,303);
+  assert.equal(second.post.status,303);
+  const a=new URL(first.post.headers.get('location'));
+  const b=new URL(second.post.headers.get('location'));
+  assert.equal(a.searchParams.get('generation'),b.searchParams.get('generation'));
+  assert.notEqual(a.searchParams.get('launch'),b.searchParams.get('launch'));
+});
+
+test('new generation mode creates a fresh generation for each launch',async()=>{
+  const link=await createActivityWithMode('new_each_time');
+  const first=await launch({user:'new-student',link});
+  const second=await launch({user:'new-student',link});
+  assert.equal(first.post.status,303);
+  assert.equal(second.post.status,303);
+  const a=new URL(first.post.headers.get('location'));
+  const b=new URL(second.post.headers.get('location'));
+  assert.notEqual(a.searchParams.get('generation'),b.searchParams.get('generation'));
+  assert.equal(a.searchParams.get('user'),b.searchParams.get('user'));
+});
+
+test('unknown generation policies are rejected rather than silently defaulted',async()=>{
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const form=await fetch(bridge+'/instructor/create?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  const html=await form.text();
+  const result=await fetch(bridge+'/instructor/create',{method:'POST',
+    headers:{Cookie:cookie,Origin:bridge},
+    body:new URLSearchParams({course:'course-a',deployment:'sim-1',
+      csrf:hidden(html,'csrf'),title:'Bad policy',destination:sim+'/activity',
+      generation_mode:'unlimited_without_tracking'})
+  });
+  assert.equal(result.status,400);
+});
