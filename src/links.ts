@@ -9,10 +9,14 @@ export function buildDestination(destination: string, options: ForwardOptions, n
   }
   if (url.username || url.password) throw new Error('Credentials in destination URL are forbidden');
   for (const param of DEFAULT_PARAMS) {
-    const value = options[param];
-    if (!value) continue;
     const name = names[param] ?? param;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(name)) throw new Error('Invalid parameter name');
+    // Existing destination query parameters are preserved except for all
+    // bridge-managed parameter names. Otherwise an attacker could supply a
+    // stale user/section code when forwarding is disabled.
+    url.searchParams.delete(name);
+    const value = options[param];
+    if (!value) continue;
     url.searchParams.set(name, value);
   }
   return url.toString();
