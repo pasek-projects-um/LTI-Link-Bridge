@@ -26,6 +26,7 @@ export interface VerifiedLaunchRecord {
   launchId: string;
   generationId: string;
   generationMode: GenerationMode;
+  liveSessionId: string|null;
   occurredAt: string;
 }
 
@@ -52,7 +53,7 @@ export async function recordVerifiedLaunch(
     deploymentId, institution, courseId, canvasUserId, fullName, email,
     linkId, userScope, keyVersion, courseCode, userCode, sectionCode,
     resourceLinkId, destinationOrigin, tokenFingerprint, launchId,
-    generationId, generationMode, occurredAt
+    generationId, generationMode, liveSessionId, occurredAt
   } = launch;
 
   const usesFreshGeneration = generationMode === 'new_each_time';
@@ -78,12 +79,12 @@ export async function recordVerifiedLaunch(
     db.prepare(`INSERT OR IGNORE INTO launches
       (id,token_fingerprint,event_time,deployment_id,institution,course_id,
        course_code,user_code,section_code,link_id,destination_origin,
-       resource_link_id,status,redirect_status,key_version,generation_id)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,generation_id
+       resource_link_id,status,redirect_status,key_version,generation_id,live_session_id)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,generation_id,?
       FROM link_generations WHERE ${generationWhere} AND last_launch_id=?`)
       .bind(launchId,tokenFingerprint,occurredAt,deploymentId,institution,
         courseId,courseCode,userCode,sectionCode,linkId,destinationOrigin,
-        resourceLinkId,'recorded','issued',keyVersion,...generationBindings,launchId),
+        resourceLinkId,'recorded','issued',keyVersion,liveSessionId,...generationBindings,launchId),
 
     // Identity data are written only for successful launch records.
     db.prepare(`INSERT OR IGNORE INTO identities
@@ -107,7 +108,7 @@ export async function recordVerifiedLaunch(
     // successful launch is created for a refused attempt.
     db.prepare(`INSERT INTO launch_attempts
       (attempt_id,attempted_at,deployment_id,course_id,link_id,resource_link_id,
-       user_code,token_fingerprint,outcome,launch_id,generation_id)
+       user_code,token_fingerprint,outcome,launch_id,generation_id,live_session_id)
       SELECT ?,?,?,?,?,?,?,?,
         CASE
           WHEN EXISTS(SELECT 1 FROM launches WHERE id=?) THEN 'launched'
@@ -115,10 +116,10 @@ export async function recordVerifiedLaunch(
           ELSE 'duplicate_token'
         END,
         CASE WHEN EXISTS(SELECT 1 FROM launches WHERE id=?) THEN ? ELSE NULL END,
-        (SELECT generation_id FROM launches WHERE id=?)
+        (SELECT generation_id FROM launches WHERE id=?),?
       `)
       .bind(launchId,occurredAt,deploymentId,courseId,linkId,resourceLinkId,
-        userCode,tokenFingerprint,launchId,generationMode,launchId,launchId,launchId)
+        userCode,tokenFingerprint,launchId,generationMode,launchId,launchId,launchId,liveSessionId)
   ];
 
   const results=await db.batch(statements);
