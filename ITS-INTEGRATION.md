@@ -43,6 +43,12 @@ API results are filtered to the exact user/course, active/invited enrollments an
 - Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
 - Data retention schedule and staff authorization policy are TBD.
 
+## Optional instructor live session codes
+
+The bridge now supports code-gated cohorts on individual activities. Instructors explicitly enable the feature at link creation and start/close sessions from the protected instructor dashboard; the code is shown only upon creation and stored as an HMAC-protected hash. Students must still authenticate through Canvas and enter the class code before being admitted; a later Canvas launch passes the pseudonymous `live_session` cohort ID to the destination. Each verified Canvas click remains separately logged. Up to five incorrect attempts within fifteen minutes are allowed for an individual student/session.
+
+This is **not physical attendance attestation**: a code can be shared outside the room. Nor does the bridge itself protect destination endpoints from direct requests; destination services must isolate shared environments and independently validate access where necessary. Closing a live session stops new admissions and may optionally allow admitted users to resume. Migration `0012_live_sessions.sql` is required; review classroom code sharing and retention of `live_admissions` / `live_code_attempts` during the institutional privacy review.
+
 ## Canvas scheduling and complete verified click history
 
 Canvas remains responsible for assignment due dates, available-from/until dates, differentiated recipients, publication and module restrictions. The bridge does not replicate or independently enforce those rules, and does not currently implement Assignment and Grade Services. Real Canvas assignment placement and Deep Linking compatibility remain pilot validation tasks.
