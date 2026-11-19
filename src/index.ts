@@ -343,7 +343,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
 
   const filter=`<form method="get"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><label>Activity <select name="link"><option value="">All</option>${linkOptions}</select></label><label>Student code <input name="user" value="${escapeHtml(filterUser)}"></label><label>From UTC <input name="since" placeholder="2026-01-01T00:00:00Z" value="${escapeHtml(since)}"></label><label>Until UTC <input name="until" placeholder="2026-12-31T23:59:59Z" value="${escapeHtml(until)}"></label><button>Filter</button></form>`;
   const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
-  const exports=`<p><a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
+  const exports=`<p><a href="/instructor/export?${base}&type=attempts${exportFilter}">Export verified click attempts (CSV)</a> · <a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
   return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${attemptCounts?.total||0}</b> verified click attempts · <b>${attemptCounts?.blocked||0}</b> blocked repeat attempts · <b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities · <b>${counts?.generations||0}</b> generations<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Verified click attempt history</h2><p>Includes repeat clicks blocked by the bridge. Canvas may prevent access before a request reaches this tool.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Outcome</th><th>Generation</th></tr>${attemptHistory}</table><h2>Chronological successful launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
 }
@@ -354,11 +354,14 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
   const session=await authorize(req,env,course,deploy);
   if(!session)return error(403,'Instructor access required');
   const exportType=url.searchParams.get('type')||'launches';
-  if(!['launches','identities'].includes(exportType))return error(400,'Unsupported CSV export');
+  if(!['launches','identities','attempts'].includes(exportType))return error(400,'Unsupported CSV export');
   const identities=exportType==='identities';
+  const attempts=exportType==='attempts';
   const link=url.searchParams.get('link')||'',user=url.searchParams.get('user')||'';
   const since=url.searchParams.get('since')||'',until=url.searchParams.get('until')||'';
-  const columns=identities
+  const columns=attempts
+    ? ['attempt_id','attempted_at','deployment_id','course_id','link_id','resource_link_id','user_code','outcome','launch_id','generation_id']
+    : identities
     ? ['user_id','full_name','email','user_code','scope','link_id','key_version','section_ids','first_seen','last_seen']
     : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version','generation_id','destination_opened_at'];
   if(identities){
@@ -375,7 +378,15 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
       try {
         let query:string;
         const values:unknown[]=[deploy,course];
-        if(identities){
+        if(attempts){
+          const where=['deployment_id=?','course_id=?'];
+          if(user){where.push('user_code=?');values.push(user);}
+          if(link){where.push('link_id=?');values.push(link);}
+          if(since){where.push('attempted_at>=?');values.push(since);}
+          if(until){where.push('attempted_at<=?');values.push(until);}
+          if(lastTime){where.push('(attempted_at>? OR (attempted_at=? AND attempt_id>?))');values.push(lastTime,lastTime,lastId);}
+          query='SELECT '+columns.join(',')+' FROM launch_attempts WHERE '+where.join(' AND ')+' ORDER BY attempted_at,attempt_id LIMIT 400';
+        }else if(identities){
           const where=['i.deployment_id=?','i.course_id=?'];
           if(user){where.push('c.user_code=?');values.push(user);}
           if(link){where.push('c.link_id=?');values.push(link);}
@@ -399,7 +410,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
         if(identities){
           const last=rows[rows.length-1];lastUser=String(last.user_id);lastCode=String(last.user_code);lastScope=String(last.scope);lastLink=String(last.link_id);lastVersion=String(last.key_version);
         }else{
-          const last=rows[rows.length-1];lastTime=String(last.event_time);lastId=String(last.id);
+          const last=rows[rows.length-1];lastTime=String(attempts?last.attempted_at:last.event_time);lastId=String(attempts?last.attempt_id:last.id);
         }
         if(rows.length<400){finished=true;controller.close();}
       }catch(e){controller.error(e);}
