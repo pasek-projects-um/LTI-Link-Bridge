@@ -100,7 +100,25 @@ export async function recordVerifiedLaunch(
       (deployment_id,course_id,user_id,user_code,scope,link_id,key_version)
       SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM launches WHERE id=?)`)
       .bind(deploymentId,courseId,canvasUserId,userCode,userScope,
-        userScope==='activity'?linkId:'',keyVersion,launchId)
+        userScope==='activity'?linkId:'',keyVersion,launchId),
+
+    // Record EVERY authenticated request reaching this stage, including a
+    // repeat that a once-per-student policy refuses. No second generation or
+    // successful launch is created for a refused attempt.
+    db.prepare(`INSERT INTO launch_attempts
+      (attempt_id,attempted_at,deployment_id,course_id,link_id,resource_link_id,
+       user_code,token_fingerprint,outcome,launch_id,generation_id)
+      SELECT ?,?,?,?,?,?,?,?,
+        CASE
+          WHEN EXISTS(SELECT 1 FROM launches WHERE id=?) THEN 'launched'
+          WHEN ?='once_per_student' THEN 'blocked_single_use'
+          ELSE 'duplicate_token'
+        END,
+        CASE WHEN EXISTS(SELECT 1 FROM launches WHERE id=?) THEN ? ELSE NULL END,
+        (SELECT generation_id FROM launches WHERE id=?)
+      `)
+      .bind(launchId,occurredAt,deploymentId,courseId,linkId,resourceLinkId,
+        userCode,tokenFingerprint,launchId,generationMode,launchId,launchId,launchId)
   ];
 
   const results=await db.batch(statements);
