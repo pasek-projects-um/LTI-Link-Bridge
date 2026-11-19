@@ -36,6 +36,7 @@ function hintFrom(url) {
     user: url.searchParams.get('user') || (url.searchParams.get('role') === 'instructor' ? 'teacher-1' : 'student-1'),
     course: url.searchParams.get('course') || 'course-a',
     link: url.searchParams.get('link') || 'sim-activity-a',
+    placement: url.searchParams.get('placement') || '',
     kind: url.searchParams.get('kind') || 'resource',
     bad: url.searchParams.get('bad') || '',
     customLink: url.searchParams.get('customLink') || '',
@@ -55,7 +56,7 @@ async function makeToken(query) {
     [claim + 'message_type']: deep ? 'LtiDeepLinkingRequest' : 'LtiResourceLinkRequest',
     [claim + 'deployment_id']: bad === 'deployment' ? 'unknown-deployment' : hint.deployment,
     [claim + 'context']: { id: hint.course, title: 'Simulated ' + hint.course },
-    [claim + 'resource_link']: { id: deep ? 'instructor-deep-link' : hint.kind === 'dashboard' ? 'instructor-dashboard' : 'resource:' + hint.course + ':' + hint.link },
+    [claim + 'resource_link']: { id: deep ? 'instructor-deep-link' : hint.kind === 'dashboard' ? 'instructor-dashboard' : 'resource:' + hint.course + ':' + (hint.placement || hint.link) },
     [claim + 'roles']: [hint.role === 'instructor' ? instructorRole : hint.role === 'ta' ? 'http://purl.imsglobal.org/vocab/lis/v2/membership#TeachingAssistant' : hint.role === 'spoof' ? 'https://example.invalid/vocab#Instructor' : learnerRole],
     ...(custom ? { [claim + 'custom']: custom } : {}),
     ...(deep ? { [deepClaim + 'deep_linking_settings']: { deep_link_return_url: hint.bad === 'return' ? 'https://attacker.invalid/steal' : issuer + '/return', data: encode({ course: hint.course, user: hint.user }), accept_types: ['ltiResourceLink'], accept_presentation_document_targets: ['iframe', 'window'] } } : {})
