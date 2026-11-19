@@ -22,6 +22,7 @@ The instructor dashboard and launch CSV include the generation ID. Older links a
 
 - `src/index.ts`: signed Canvas launch validation, routing, instructor pages, launch persistence, and exports
 - `src/generation-policy.ts`: named policies, validation, and instructor-facing labels
+- `src/launch-recording.ts`: documented atomic database operations for generations, launch events, and protected identity mappings
 - `src/links.ts`: destination URL validation and pseudonymous query parameters
 - `migrations/0009_link_generations.sql`: persistent generation history and per-student reservation index
 - `tests/integration.test.mjs`: signed simulator scenarios for all three policies
