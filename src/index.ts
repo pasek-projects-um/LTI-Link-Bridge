@@ -486,7 +486,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const attemptCounts=await env.DB.prepare(`SELECT COUNT(*) AS total,
     SUM(CASE WHEN a.outcome='blocked_single_use' THEN 1 ELSE 0 END) AS blocked
     FROM launch_attempts a WHERE ${attemptWhere}`).bind(...values).first<{total:number;blocked:number}>();
-  const attemptRows=await env.DB.prepare(`SELECT a.attempted_at,a.user_code,a.outcome,a.generation_id,
+  const attemptRows=await env.DB.prepare(`SELECT a.attempted_at,a.user_code,a.outcome,a.generation_id,a.live_session_id,
     links.title FROM launch_attempts a JOIN links ON links.id=a.link_id
     WHERE ${attemptWhere} ORDER BY a.attempted_at DESC LIMIT 100 OFFSET ?`)
     .bind(...values,(page-1)*100).all<{attempted_at:string;user_code:string;outcome:string;generation_id:string|null;title:string}>();
@@ -501,7 +501,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const attemptHistory=attemptRows.results.map(a=>
     `<tr><td>${timeCell(a.attempted_at)}</td><td>${escapeHtml(a.title)}</td>
     <td>${escapeHtml(a.user_code)}</td><td>${escapeHtml(a.outcome)}</td>
-    <td>${escapeHtml(a.generation_id||'—')}</td></tr>`).join('');
+    <td>${escapeHtml(a.generation_id||'—')}</td><td>${escapeHtml(a.live_session_id||'—')}</td></tr>`).join('');
   const summaryByDay=byDay.results.map(r=>'<tr><td>'+escapeHtml(r.day)+'</td><td>'+escapeHtml(r.total)+'</td></tr>').join('');
   const summaryByActivity=byActivity.results.map(r=>'<tr><td><a href="/instructor?'+base+'&link='+encodeURIComponent(r.link_id)+'">'+escapeHtml(r.title)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.students)+'</td><td>'+escapeHtml(r.generations)+'</td></tr>').join('');
   const summaryByStudent=byStudent.results.map(r=>'<tr><td><a href="/instructor?'+base+'&user='+encodeURIComponent(r.user_code)+'">'+escapeHtml(r.user_code)+'</a></td><td>'+escapeHtml(r.total)+'</td><td>'+escapeHtml(r.activities)+'</td><td>'+escapeHtml(r.generations)+'</td><td>'+timeCell(r.last_launch)+'</td></tr>').join('');
@@ -513,7 +513,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
   const exports=`<p><a href="/instructor/export?${base}&type=attempts${exportFilter}">Export verified click attempts (CSV)</a> · <a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/live?${base}">Live sessions</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${attemptCounts?.total||0}</b> verified click attempts · <b>${attemptCounts?.blocked||0}</b> blocked repeat attempts · <b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities · <b>${counts?.generations||0}</b> generations<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Verified click attempt history</h2><p>Includes repeat clicks blocked by the bridge. Canvas may prevent access before a request reaches this tool.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Outcome</th><th>Generation</th></tr>${attemptHistory}</table><h2>Chronological successful launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Live session</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/live?${base}">Live sessions</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${attemptCounts?.total||0}</b> verified click attempts · <b>${attemptCounts?.blocked||0}</b> blocked repeat attempts · <b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities · <b>${counts?.generations||0}</b> generations<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Verified click attempt history</h2><p>Includes repeat clicks blocked by the bridge. Canvas may prevent access before a request reaches this tool.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Outcome</th><th>Generation</th><th>Live session</th></tr>${attemptHistory}</table><h2>Chronological successful launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Live session</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -528,7 +528,7 @@ async function exportCsv(req:Request,env:Env):Promise<Response>{
   const link=url.searchParams.get('link')||'',user=url.searchParams.get('user')||'';
   const since=url.searchParams.get('since')||'',until=url.searchParams.get('until')||'';
   const columns=attempts
-    ? ['attempt_id','attempted_at','deployment_id','course_id','link_id','resource_link_id','user_code','outcome','launch_id','generation_id']
+    ? ['attempt_id','attempted_at','deployment_id','course_id','link_id','resource_link_id','user_code','outcome','launch_id','generation_id','live_session_id']
     : identities
     ? ['user_id','full_name','email','user_code','scope','link_id','key_version','section_ids','first_seen','last_seen']
     : ['id','event_time','institution','deployment_id','course_id','course_code','user_code','section_code','link_id','destination_origin','resource_link_id','status','redirect_status','error_code','key_version','generation_id','live_session_id','destination_opened_at'];
