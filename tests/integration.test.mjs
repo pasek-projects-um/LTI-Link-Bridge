@@ -566,3 +566,25 @@ test('unknown generation policies are rejected rather than silently defaulted',a
   });
   assert.equal(result.status,400);
 });
+
+test('simultaneous once-per-student launches cannot both be accepted',async()=>{
+  const link=await createActivityWithMode('once_per_student');
+  const results=await Promise.all([
+    launch({user:'concurrent-once-student',link}),
+    launch({user:'concurrent-once-student',link})
+  ]);
+  const statuses=results.map(result=>result.post.status).sort();
+  assert.deepEqual(statuses,[303,409]);
+});
+
+test('simultaneous reusable launches resolve to the same committed generation',async()=>{
+  const link=await createActivityWithMode('reuse_generation');
+  const results=await Promise.all([
+    launch({user:'concurrent-reuse-student',link}),
+    launch({user:'concurrent-reuse-student',link})
+  ]);
+  assert.deepEqual(results.map(result=>result.post.status),[303,303]);
+  const urls=results.map(result=>new URL(result.post.headers.get('location')));
+  assert.equal(urls[0].searchParams.get('generation'),urls[1].searchParams.get('generation'));
+  assert.notEqual(urls[0].searchParams.get('launch'),urls[1].searchParams.get('launch'));
+});
