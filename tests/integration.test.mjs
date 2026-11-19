@@ -518,6 +518,126 @@ async function createActivityWithMode(mode) {
   return id;
 }
 
+/**
+ * Exercise the classroom code UI with the same verified instructor
+ * cookie used by the existing dashboard tests.
+ */
+async function createLiveActivity() {
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const createPage=await fetch(bridge+'/instructor/create?course=course-a&deployment=sim-1',
+    {headers:{Cookie:cookie}});
+  const formHtml=await createPage.text();
+  const saved=await fetch(bridge+'/instructor/create',{
+    method:'POST',headers:{Cookie:cookie,Origin:bridge},
+    body:new URLSearchParams({
+      course:'course-a',deployment:'sim-1',csrf:hidden(formHtml,'csrf'),
+      title:'Code-gated live activity',destination:sim+'/activity?keep=yes',
+      scope:'course',generation_mode:'reuse_generation',user:'on',
+      course_code:'on',link:'on',launch:'on',live_code:'on'
+    })
+  });
+  assert.equal(saved.status,200);
+  const savedHtml=await saved.text();
+  const link=savedHtml.match(/Link ID: <code>([^<]+)<\/code>/)?.[1];
+  assert.ok(link,'Created live activity should return an ID');
+  return {cookie,link};
+}
+
+async function startLiveSession(cookie,link,code='MAPLE-47268',label='Lecture cohort'){
+  const page=await fetch(bridge+'/instructor/live?course=course-a&deployment=sim-1',
+    {headers:{Cookie:cookie}});
+  assert.equal(page.status,200);
+  const screen=await page.text();
+  const result=await fetch(bridge+'/instructor/live',{
+    method:'POST',headers:{Cookie:cookie,Origin:bridge},
+    body:new URLSearchParams({
+      course:'course-a',deployment:'sim-1',link_id:link,
+      csrf:hidden(screen,'csrf'),action:'start',label,code
+    })
+  });
+  assert.equal(result.status,200);
+  const html=await result.text();
+  assert.match(html,new RegExp(code));
+  return html;
+}
+
+test('classroom code gates a Canvas launch and admitted students reenter without a second code',async()=>{
+  const {cookie,link}=await createLiveActivity();
+  await startLiveSession(cookie,link);
+  const waiting=await launch({user:'student-live-one',link});
+  assert.equal(waiting.post.status,200);
+  const entryPage=await waiting.post.text();
+  assert.match(entryPage,/Join live class session/);
+  const wrong=await fetch(bridge+'/lti/live-code',{
+    method:'POST',headers:{Origin:bridge},
+    body:new URLSearchParams({ticket:hidden(entryPage,'ticket'),code:'WRONG-77777'})
+  });
+  assert.equal(wrong.status,403);
+  const admitted=await fetch(bridge+'/lti/live-code',{
+    method:'POST',headers:{Origin:bridge},
+    body:new URLSearchParams({ticket:hidden(entryPage,'ticket'),code:'MAPLE-47268'})
+  });
+  assert.equal(admitted.status,200);
+  assert.match(await admitted.text(),/Return to the activity in Canvas/);
+  const opened=await launch({user:'student-live-one',link});
+  assert.equal(opened.post.status,303);
+  const url=new URL(opened.post.headers.get('location'));
+  assert.match(url.searchParams.get('live_session'),/^[a-f0-9-]{36}$/);
+  const again=await launch({user:'student-live-one',link});
+  assert.equal(again.post.status,303);
+  const secondUrl=new URL(again.post.headers.get('location'));
+  assert.equal(url.searchParams.get('live_session'),secondUrl.searchParams.get('live_session'));
+  assert.equal(url.searchParams.get('generation'),secondUrl.searchParams.get('generation'));
+  assert.notEqual(url.searchParams.get('launch'),secondUrl.searchParams.get('launch'));
+  const outsider=await launch({user:'student-live-two',link});
+  assert.equal(outsider.post.status,200);
+  assert.match(await outsider.post.text(),/in-class code/);
+
+  const dashboard=await fetch(bridge+'/instructor/live?course=course-a&deployment=sim-1',
+    {headers:{Cookie:cookie}});
+  assert.equal(dashboard.status,200);
+  const dashboardHtml=await dashboard.text();
+  assert.match(dashboardHtml,/>1<\/td>/);
+  assert.match(dashboardHtml,/Incorrect codes/);
+  assert.doesNotMatch(dashboardHtml,/MAPLE-47268/);
+  const csv=await fetch(bridge+
+    '/instructor/export?course=course-a&deployment=sim-1&link='+encodeURIComponent(link)+
+    '&type=launches',{headers:{Cookie:cookie}});
+  assert.equal(csv.status,200);
+  assert.match((await csv.text()).split('\r\n')[0],/live_session_id/);
+});
+
+test('closed live sessions forbid new admissions and optionally allow admitted students to resume',async()=>{
+  const {cookie,link}=await createLiveActivity();
+  await startLiveSession(cookie,link,'BLOCK-24682','Closed demo');
+  const first=await launch({user:'student-live-closed',link});
+  const page=await first.post.text();
+  const admission=await fetch(bridge+'/lti/live-code',{
+    method:'POST',headers:{Origin:bridge},
+    body:new URLSearchParams({ticket:hidden(page,'ticket'),code:'BLOCK-24682'})
+  });
+  assert.equal(admission.status,200);
+  const member=await launch({user:'student-live-closed',link});
+  assert.equal(member.post.status,303);
+  const control=await fetch(bridge+'/instructor/live?course=course-a&deployment=sim-1',
+    {headers:{Cookie:cookie}});
+  const screen=await control.text();
+  const sessionId=new URL(member.post.headers.get('location')).searchParams.get('live_session');
+  const close=await fetch(bridge+'/instructor/live',{
+    method:'POST',headers:{Cookie:cookie,Origin:bridge},
+    body:new URLSearchParams({course:'course-a',deployment:'sim-1',
+      link_id:link,csrf:hidden(screen,'csrf'),action:'close',
+      session_id:sessionId,allow_resume:'on'})
+  });
+  assert.equal(close.status,200);
+  const resume=await launch({user:'student-live-closed',link});
+  assert.equal(resume.post.status,303);
+  const excluded=await launch({user:'student-live-excluded',link});
+  assert.equal(excluded.post.status,409);
+});
+
 test('once per student blocks a second use but allows another student',async()=>{
   const link=await createActivityWithMode('once_per_student');
   const first=await launch({user:'once-student-a',link});
