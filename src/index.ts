@@ -353,14 +353,23 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   let liveSessionId:string|undefined;
   if(link.live_code_required){
     const active=await getOpenLiveSession(env.DB,reg.id,course,link.id);
-    if(active && await admittedToSession(env.DB,active.id,user)){
-      liveSessionId=active.id;
-    }else if(active){
-      return liveCodePrompt(env,reg.id,course,link,user,userCode,resource,active);
+    if(active){
+      // Students previously admitted to this session can reenter without
+      // retyping the code; new students must enter the displayed code.
+      if(await admittedToSession(env.DB,active.id,user)){
+        liveSessionId=active.id;
+      }else{
+        return liveCodePrompt(env,reg.id,course,link,user,userCode,resource,active);
+      }
     }else{
-      const previous=await resumableSession(env.DB,reg.id,course,link.id,user);
-      if(!previous)return error(409,'This activity requires an instructor to open a live class session.');
-      liveSessionId=previous.id;
+      const latest=await getLatestLiveSession(env.DB,reg.id,course,link.id);
+      // Never silently redirect someone into an older closed class cohort
+      // after the instructor has ended the latest session.
+      if(!latest)return error(409,'This activity requires an instructor to open a live class session.');
+      if(!latest.allow_admitted_resume || !await admittedToSession(env.DB,latest.id,user)){
+        return error(409,'The most recent live session is closed to this student.');
+      }
+      liveSessionId=latest.id;
     }
   }
   const generationMode=isGenerationMode(link.generation_mode)?link.generation_mode:'new_each_time';
