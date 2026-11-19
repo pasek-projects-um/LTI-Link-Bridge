@@ -448,3 +448,17 @@ test('disabled forwarding strips stale bridge-managed query parameters',async()=
   assert.equal(destination.searchParams.get('user'),null);
   assert.equal(destination.searchParams.get('section'),null);
 });
+
+test('rejects requiring a section when section forwarding is disabled',async()=>{
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const builder=await fetch(bridge+'/instructor/create?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  const html=await builder.text();
+  const bad=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
+    course:'course-a',deployment:'sim-1',return:'',data:'',csrf:hidden(html,'csrf'),
+    title:'Required section without forwarding',destination:sim+'/activity',
+    scope:'course',user:'on',section_required:'on'
+  })});
+  assert.equal(bad.status,400);
+});
