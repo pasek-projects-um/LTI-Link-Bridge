@@ -134,6 +134,8 @@ export async function admitStudent(
     return {status:'rate_limited'};
   }
 
+  // Never accept an admission beyond the current session's fail limit,
+  // even if the code is correct after five invalid guesses.
   const valid=validClassCode(fields.code) &&
     await digestCode(secret,session.code_salt,fields.code)===session.code_hash;
   const result=valid?'accepted':'incorrect';
