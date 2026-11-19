@@ -528,12 +528,16 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     const existingVersion=await env.DB.prepare('SELECT key_version FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at LIMIT 1').bind(deploy,course).first<{key_version:string}>();
     const keyVersion=existingVersion?.key_version || activeKeyVersion(env);
     keyForVersion(env,keyVersion);
+    const insert=env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion);
     if(returnUrl){
-      const consumed=await env.DB.prepare('UPDATE deep_link_contexts SET consumed_at=? WHERE challenge=? AND deployment_id=? AND course_id=? AND user_id=? AND consumed_at IS NULL AND expires_at>=?')
-        .bind(Math.floor(Date.now()/1000),deepChallenge,deploy,course,session.user,Math.floor(Date.now()/1000)).run();
-      if(consumed.meta.changes!==1)return error(403,'Deep Linking context already used');
-    }
-        await env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion).run();
+      // Consume the one-time request and persist its link atomically.
+      const changes=await env.DB.batch([
+        env.DB.prepare('UPDATE deep_link_contexts SET consumed_at=? WHERE challenge=? AND deployment_id=? AND course_id=? AND user_id=? AND consumed_at IS NULL AND expires_at>=?')
+          .bind(Math.floor(Date.now()/1000),deepChallenge,deploy,course,session.user,Math.floor(Date.now()/1000)),
+        insert
+      ]);
+      if(changes[0].meta.changes!==1)return error(403,'Deep Linking context already used');
+    }else await insert.run();
     if(returnUrl){
       if(!env.TOOL_PRIVATE_JWK)return error(503,'Deep Linking signing key not configured');
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();if(!reg)return error(404,'Deployment missing');
