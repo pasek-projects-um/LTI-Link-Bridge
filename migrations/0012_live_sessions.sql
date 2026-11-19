@@ -46,3 +46,20 @@ CREATE INDEX idx_live_code_attempts_rate
 
 ALTER TABLE launches ADD COLUMN live_session_id TEXT;
 ALTER TABLE launch_attempts ADD COLUMN live_session_id TEXT;
+
+-- A one-use short-lived form ticket carries the verified Canvas identity
+-- across the browser's code-entry form without trusting user-supplied IDs.
+CREATE TABLE live_code_challenges (
+  ticket TEXT PRIMARY KEY,
+  deployment_id TEXT NOT NULL,
+  course_id TEXT NOT NULL,
+  link_id TEXT NOT NULL,
+  resource_link_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_code TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  FOREIGN KEY(session_id) REFERENCES live_sessions(id)
+);
+CREATE INDEX idx_live_code_challenges_expiry ON live_code_challenges(expires_at);
