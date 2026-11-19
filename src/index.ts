@@ -201,9 +201,7 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   const membership=await env.DB.prepare("SELECT section_id FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? ORDER BY CASE source WHEN 'instructor' THEN 0 ELSE 1 END, section_id LIMIT 1").bind(reg.id,course,user).first<{section_id:string}>();
   const sectionCode=membership?await pseudonym(secret,'S',version,...base,membership.section_id):null;
   if(link.section_required && !sectionCode)return error(409,'Section membership unresolved');
-  // A returned code can only be used for destinations if explicitly enabled;
-  // resolved sections are still retained in the protected launch record.
-  
+  // Resolved sections remain in protected launch records even when forwarding is off.
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
   const target=buildDestination(link.destination,{
     user:link.forward_user?userCode:undefined,course:link.forward_course?courseCode:undefined,
