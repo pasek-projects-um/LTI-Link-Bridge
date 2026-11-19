@@ -5,8 +5,9 @@ export interface ForwardOptions {
   link?: string;
   launch?: string;
   generation?: string;
+  live_session?: string;
 }
-const DEFAULT_PARAMS = ['user','course','section','link','launch','generation'] as const;
+const DEFAULT_PARAMS = ['user','course','section','link','launch','generation','live_session'] as const;
 export function buildDestination(destination: string, options: ForwardOptions, names: Partial<Record<keyof ForwardOptions,string>> = {}): string {
   const url = new URL(destination);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost','127.0.0.1'].includes(url.hostname))) {
