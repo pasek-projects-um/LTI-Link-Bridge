@@ -122,6 +122,7 @@ test('Deep Linking creates a link returned as a signed Canvas content item', asy
   const data={
     course:hidden(builderHtml,'course'), deployment:hidden(builderHtml,'deployment'),
     return:hidden(builderHtml,'return'), data:hidden(builderHtml,'data'),
+    deep_challenge:hidden(builderHtml,'deep_challenge'),
     csrf:hidden(builderHtml,'csrf'),title:'Created by integration test',
     destination:sim+'/activity?preexisting=ok',
     scope:'course', user:'on',course_code:'on',link:'on',launch:'on'
@@ -287,7 +288,7 @@ test('new courses use the explicitly active HMAC version; existing courses stay 
   const page=await builder.text();
   const created=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
     course:hidden(page,'course'),deployment:hidden(page,'deployment'),return:hidden(page,'return'),
-    data:hidden(page,'data'),csrf:hidden(page,'csrf'),
+    data:hidden(page,'data'),deep_challenge:hidden(page,'deep_challenge'),csrf:hidden(page,'csrf'),
     title:'V2 Test Activity',destination:sim+'/activity',scope:'course',
     user:'on',course_code:'on',link:'on',launch:'on'
   })});
@@ -432,7 +433,7 @@ test('disabled forwarding strips stale bridge-managed query parameters',async()=
   const html=await form.text();
   const created=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
     course:hidden(html,'course'),deployment:hidden(html,'deployment'),return:hidden(html,'return'),
-    data:hidden(html,'data'),csrf:hidden(html,'csrf'),title:'No User Forwarding',
+    data:hidden(html,'data'),deep_challenge:hidden(html,'deep_challenge'),csrf:hidden(html,'csrf'),title:'No User Forwarding',
     destination:sim+'/activity?keep=1&user=U_fake&section=S_fake',scope:'course',
     course_code:'on',link:'on',launch:'on'
   })});
