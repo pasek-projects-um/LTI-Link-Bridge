@@ -611,12 +611,12 @@ test('classroom code gates a Canvas launch and admitted students reenter without
 
 test('closed live sessions forbid new admissions and optionally allow admitted students to resume',async()=>{
   const {cookie,link}=await createLiveActivity();
-  await startLiveSession(cookie,link,'CLOUD-24683','Closed demo');
+  await startLiveSession(cookie,link,'MARCH-24683','Closed demo');
   const first=await launch({user:'student-live-closed',link});
   const page=await first.post.text();
   const admission=await fetch(bridge+'/lti/live-code',{
     method:'POST',headers:{Origin:bridge},
-    body:new URLSearchParams({ticket:hidden(page,'ticket'),code:'CLOUD-24683'})
+    body:new URLSearchParams({ticket:hidden(page,'ticket'),code:'MARCH-24683'})
   });
   assert.equal(admission.status,200);
   const member=await launch({user:'student-live-closed',link});
