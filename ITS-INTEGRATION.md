@@ -43,6 +43,14 @@ API results are filtered to the exact user/course, active/invited enrollments an
 - Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
 - Data retention schedule and staff authorization policy are TBD.
 
+## Canvas scheduling and complete verified click history
+
+Canvas remains responsible for assignment due dates, available-from/until dates, differentiated recipients, publication and module restrictions. The bridge does not replicate or independently enforce those rules, and does not currently implement Assignment and Grade Services. Real Canvas assignment placement and Deep Linking compatibility remain pilot validation tasks.
+
+Each authenticated student resource-launch attempt that reaches the generation-policy check is recorded in `launch_attempts`, including repeat visits refused under once-per-student mode. The dashboard and instructor CSV distinguish attempted clicks, accepted launches and generations. Canvas-rejected access and direct external website visits are **not observable** by the bridge. New generation scoping uses the signed Canvas resource-link placement, so separate assignments can use the same activity without sharing student single-use quotas.
+
+Required migrations: `0010_launch_attempts.sql` and `0011_placement_scoped_generations.sql`. Attempt records use the same institution-approved retention period as launch history.
+
 ## Student activity reuse and generation semantics
 
 The instructor chooses a per-student reuse policy for each new activity: once per student, reopen the same generation, or create a new generation on every visit. Each successful Canvas visit receives a unique launch ID; a generation ID identifies the activity attempt and can be reused across launches. The bridge forwards `generation` as a query parameter, but the destination must implement persistence/resumption using that identifier if reopening is desired.
