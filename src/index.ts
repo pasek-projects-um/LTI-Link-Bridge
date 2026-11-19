@@ -6,6 +6,7 @@ import { dashboardScript } from './dashboard-script.ts';
 import { lookupCanvasSections } from './canvas.ts';
 import { isGenerationMode, generationModeLabel, type GenerationMode } from './generation-policy.ts';
 import { recordVerifiedLaunch } from './launch-recording.ts';
+import { createLiveSession, getOpenLiveSession, getLatestLiveSession, admittedToSession, admitStudent, closeLiveSession, resumableSession, type LiveSession } from './live-sessions.ts';
 
 interface Env {
   DB: D1Database; HMAC_KEY_V1: string; HMAC_KEY_V2?: string; HMAC_ACTIVE_VERSION?: string; SESSION_SECRET: string;
@@ -15,7 +16,7 @@ interface Env {
 }
 type Registration = {id:string;institution:string;issuer:string;client_id:string;deployment_id:string;auth_url:string;jwks_url:string;deep_link_return_origins?:string|null;canvas_api_origin?:string|null};
 type Launch = Record<string,any>;
-type ActivityLink = Launch & {generation_mode?:GenerationMode};
+type ActivityLink = Launch & {generation_mode?:GenerationMode;live_code_required?:number};
 const courseClaim = LTI + 'context';
 const resourceClaim = LTI + 'resource_link';
 const deploymentClaim = LTI + 'deployment_id';
@@ -175,6 +176,149 @@ async function refreshCanvasMembership(env:Env,reg:Registration,course:string,us
     return {source:'fallback',sections:[],error:'Canvas section lookup unavailable'};
   }
 }
+/**
+ * A code request uses a short, signed one-use continuation ticket.
+ * It is tied to the verified Canvas launch; the browser never supplies the
+ * Canvas user identity, session identifier, or activity binding itself.
+ */
+async function liveCodePrompt(
+  env:Env,deploy:string,course:string,link:ActivityLink,user:string,
+  userCode:string,resource:string,session:LiveSession
+):Promise<Response>{
+  const ticket=urlToken(32),expires=Math.floor(Date.now()/1000)+600;
+  await env.DB.prepare(`INSERT INTO live_code_challenges
+    (ticket,deployment_id,course_id,link_id,resource_link_id,user_id,user_code,
+     session_id,expires_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .bind(ticket,deploy,course,link.id,resource,user,userCode,session.id,expires).run();
+  const action='/lti/live-code';
+  return response(html('Join live class session',
+    '<p>This activity requires the in-class code supplied by your instructor.</p>'+
+    '<p>Session: '+escapeHtml(session.label)+'</p>'+
+    '<form method="post" action="'+action+'">'+
+    '<input type="hidden" name="ticket" value="'+escapeHtml(ticket)+'">'+
+    '<label>In-class code <input name="code" autocomplete="one-time-code" required maxlength="32"></label>'+
+    '<button>Join live session</button></form>'));
+}
+
+/**
+ * Verify a student's entry code and resume the original LTI request via
+ * a short-lived one-time ticket. Revalidation of the original JWT is not
+ * possible from this page; the ticket is derived only from a verified launch.
+ */
+async function submitLiveCode(req:Request,env:Env):Promise<Response>{
+  const url=new URL(req.url),origin=req.headers.get('origin');
+  if(origin&&origin!==url.origin)return error(403,'Cross-site live-session submission refused');
+  const form=await parseForm(req),ticket=form.ticket||'';
+  if(!/^[A-Za-z0-9_-]{30,100}$/.test(ticket))return error(403,'Invalid live-session ticket');
+  const challenge=await env.DB.prepare('SELECT * FROM live_code_challenges WHERE ticket=?')
+    .bind(ticket).first<{ticket:string;deployment_id:string;course_id:string;link_id:string;
+      resource_link_id:string;user_id:string;user_code:string;session_id:string;
+      expires_at:number;consumed_at:number|null;initial_token_fingerprint:string|null}>();
+  if(!challenge||challenge.consumed_at!==null||challenge.expires_at<Math.floor(Date.now()/1000))
+    return error(403,'Expired or previously used live-session ticket');
+  const result=await admitStudent(env.DB,env.SESSION_SECRET,{
+    sessionId:challenge.session_id,deployment:challenge.deployment_id,
+    course:challenge.course_id,link:challenge.link_id,
+    canvasUserId:challenge.user_id,userCode:challenge.user_code,code:form.code||''
+  });
+  if(result.status==='incorrect')return error(403,'Incorrect class code. Return to Canvas to try again.');
+  if(result.status==='rate_limited')return error(429,'Too many incorrect codes. Try again later.');
+  if(result.status==='closed')return error(409,'This live session has closed.');
+  const used=await env.DB.prepare(`UPDATE live_code_challenges SET consumed_at=?
+    WHERE ticket=? AND consumed_at IS NULL AND expires_at>=?`)
+    .bind(Math.floor(Date.now()/1000),ticket,Math.floor(Date.now()/1000)).run();
+  if(used.meta.changes!==1)return error(409,'Ticket already used. Launch again from Canvas.');
+  // Return students through Canvas for a fresh signed LTI launch, instead of
+  // relying on an unauthenticated redirect to the destination.
+  return response(html('Live admission confirmed',
+    '<p>Code accepted. You are admitted to this live class session.</p>'+
+    '<p>Return to the activity in Canvas and open it again. You will not need to enter the code again for this session.</p>'));
+}
+
+/**
+ * Instructors configure live cohorts here; dates remain solely in Canvas.
+ * An active cohort accepts new students; a closed cohort cannot.
+ */
+async function manageLiveSessions(req:Request,env:Env):Promise<Response>{
+  const url=new URL(req.url);
+  const form=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
+  const course=form.course||'',deploy=form.deployment||'';
+  const teacher=await authorize(req,env,course,deploy);
+  if(!teacher)return error(403,'Verified instructor session required');
+  const csrf=await hmac(env.SESSION_SECRET,'live-sessions',deploy,course,teacher.user);
+  let revealCode='';
+  if(req.method==='POST'){
+    const origin=req.headers.get('origin');
+    if(origin&&origin!==url.origin)return error(403,'Cross-site class session request refused');
+    if(form.csrf!==csrf)return error(403,'Invalid live-session form token');
+    const link=await env.DB.prepare(`SELECT id,title,live_code_required FROM links
+      WHERE id=? AND course_id=? AND deployment_id=?`)
+      .bind(form.link_id||'',course,deploy)
+      .first<{id:string;title:string;live_code_required:number}>();
+    if(!link||!link.live_code_required)return error(400,'Choose a code-required activity in this course');
+    if(form.action==='start'){
+      const label=(form.label||'Live class').trim();
+      if(!label||label.length>120)return error(400,'Live-session name must be 1–120 characters');
+      try{
+        const created=await createLiveSession(env.DB,env.SESSION_SECRET,{
+          deployment:deploy,course,link:link.id,label,instructor:teacher.user,
+          code:form.code||undefined
+        });
+        revealCode=created.code;
+      }catch(e){return error(409,e instanceof Error?e.message:'Could not start live session');}
+    }else if(form.action==='close'){
+      const resume=form.allow_resume==='on';
+      const closed=await closeLiveSession(env.DB,form.session_id||'',deploy,course,link.id,resume);
+      if(!closed)return error(409,'Live session already closed or not found');
+    }else return error(400,'Unknown live-session action');
+    await env.DB.prepare(`INSERT INTO audit_events
+      (id,time,deployment_id,course_id,actor_id,action,details)
+      VALUES(?,?,?,?,?,?,?)`)
+      .bind(randomId(),new Date().toISOString(),deploy,course,teacher.user,
+        'live_session_'+form.action,JSON.stringify({link:link.id,session:form.session_id||null})).run();
+  }
+  const activities=await env.DB.prepare(`SELECT id,title FROM links
+    WHERE deployment_id=? AND course_id=? AND live_code_required=1 ORDER BY title`)
+    .bind(deploy,course).all<{id:string;title:string}>();
+  const sessions=await env.DB.prepare(`SELECT s.id,s.label,s.link_id,s.state,
+    s.allow_admitted_resume,s.created_at,s.closed_at,l.title,
+    (SELECT COUNT(*) FROM live_admissions a WHERE a.session_id=s.id) AS admitted,
+    (SELECT COUNT(*) FROM live_code_attempts a WHERE a.session_id=s.id AND a.result='incorrect') AS incorrect
+    FROM live_sessions s JOIN links l ON l.id=s.link_id
+    WHERE s.deployment_id=? AND s.course_id=?
+    ORDER BY s.created_at DESC LIMIT 100`)
+    .bind(deploy,course).all<Record<string,unknown>>();
+  const base='course='+encodeURIComponent(course)+'&deployment='+encodeURIComponent(deploy);
+  const choices=activities.results.map(a=>'<option value="'+escapeHtml(a.id)+'">'+escapeHtml(a.title)+'</option>').join('');
+  const sessionRows=sessions.results.map(s=>'<tr><td>'+escapeHtml(s.title)+'</td><td>'+escapeHtml(s.label)+
+    '</td><td>'+escapeHtml(s.state)+'</td><td>'+escapeHtml(s.admitted)+'</td><td>'+
+    escapeHtml(s.incorrect)+'</td><td>'+timeCell(s.created_at)+'</td><td>'+
+    (s.state==='open'?'<form method="post"><input type="hidden" name="course" value="'+escapeHtml(course)+
+      '"><input type="hidden" name="deployment" value="'+escapeHtml(deploy)+
+      '"><input type="hidden" name="csrf" value="'+csrf+
+      '"><input type="hidden" name="link_id" value="'+escapeHtml(s.link_id)+
+      '"><input type="hidden" name="session_id" value="'+escapeHtml(s.id)+
+      '"><label><input type="checkbox" name="allow_resume" checked> Allow admitted students to resume</label>'+
+      '<button name="action" value="close">Close</button></form>':
+      (s.allow_admitted_resume?'Resumption allowed':'Fully closed'))+'</td></tr>').join('');
+  const codeMessage=revealCode?
+    '<section><h2>Class code — display now</h2><p><strong>'+escapeHtml(revealCode)+
+    '</strong></p><p>This code is shown only now. It is not stored in plaintext.</p></section>':'';
+  const body='<nav><a href="/instructor?'+base+'">Dashboard</a></nav>'+
+    codeMessage+'<h2>Start an in-class session</h2>'+
+    '<p>Canvas determines assignment dates and eligibility. This code controls membership in the shared in-class environment.</p>'+
+    '<form method="post"><input type="hidden" name="course" value="'+escapeHtml(course)+
+    '"><input type="hidden" name="deployment" value="'+escapeHtml(deploy)+
+    '"><input type="hidden" name="csrf" value="'+csrf+
+    '"><label>Activity <select name="link_id">'+choices+
+    '</select></label><label>Session name <input name="label" maxlength="120" value="Live class" required></label>'+
+    '<label>Optional fixed code <input name="code" maxlength="16" placeholder="Generated automatically"></label>'+
+    '<button name="action" value="start">Start session</button></form>'+
+    '<h2>Recent sessions</h2><table><tr><th>Activity</th><th>Session</th><th>Status</th><th>Admitted</th>'+
+    '<th>Incorrect codes</th><th>Started (UTC)</th><th>Controls</th></tr>'+sessionRows+'</table>';
+  return response(html('Live class sessions',body));
+}
+
 async function handleResource(env:Env,claims:Launch,reg:Registration,token:string):Promise<Response>{
   const course=contextId(claims),resource=resourceId(claims),user=String(claims.sub);
   const configured=getLinkId(claims);
@@ -206,6 +350,19 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   if(link.section_required && !sectionCode)return error(409,'Section membership unresolved');
   // Resolved sections remain in protected launch records even when forwarding is off.
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
+  let liveSessionId:string|undefined;
+  if(link.live_code_required){
+    const active=await getOpenLiveSession(env.DB,reg.id,course,link.id);
+    if(active && await admittedToSession(env.DB,active.id,user)){
+      liveSessionId=active.id;
+    }else if(active){
+      return liveCodePrompt(env,reg.id,course,link,user,userCode,resource,active);
+    }else{
+      const previous=await resumableSession(env.DB,reg.id,course,link.id,user);
+      if(!previous)return error(409,'This activity requires an instructor to open a live class session.');
+      liveSessionId=previous.id;
+    }
+  }
   const generationMode=isGenerationMode(link.generation_mode)?link.generation_mode:'new_each_time';
   const existingGeneration=generationMode==='new_each_time'?null:await env.DB.prepare(
     'SELECT generation_id FROM link_generations WHERE deployment_id=? AND course_id=? AND link_id=? AND resource_link_id=? AND user_id=? AND generation_id LIKE ? LIMIT 1'
@@ -230,6 +387,7 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
     launchId: eventId,
     generationId,
     generationMode,
+    liveSessionId: liveSessionId||null,
     occurredAt: at
   };
 
@@ -252,7 +410,8 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
     section:link.forward_section?sectionCode||undefined:undefined,
     link:link.forward_link?link.id:undefined,
     launch:link.forward_launch?eventId:undefined,
-    generation:recorded.generationId
+    generation:recorded.generationId,
+    live_session:liveSessionId
   });
   return response('',303,'text/plain',{'Location':target});
 }
@@ -345,7 +504,7 @@ async function dashboard(req:Request,env:Env):Promise<Response>{
   const exportFilter=(filterLink?'&link='+encodeURIComponent(filterLink):'')+(filterUser?'&user='+encodeURIComponent(filterUser):'')+(since?'&since='+encodeURIComponent(since):'')+(until?'&until='+encodeURIComponent(until):'');
   const exports=`<p><a href="/instructor/export?${base}&type=attempts${exportFilter}">Export verified click attempts (CSV)</a> · <a href="/instructor/export?${base}&type=launches${exportFilter}">Export matching launches (CSV)</a> · <a href="/instructor/export?${base}&type=identities">Export identity mapping (CSV)</a></p>`;
   const next=new URL(url);next.searchParams.set('page',String(page+1));
-  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${attemptCounts?.total||0}</b> verified click attempts · <b>${attemptCounts?.blocked||0}</b> blocked repeat attempts · <b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities · <b>${counts?.generations||0}</b> generations<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Verified click attempt history</h2><p>Includes repeat clicks blocked by the bridge. Canvas may prevent access before a request reaches this tool.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Outcome</th><th>Generation</th></tr>${attemptHistory}</table><h2>Chronological successful launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
+  return response(html('LTI Link Bridge · Course dashboard',`<nav><a href="/instructor/create?${base}">Create link</a> <a href="/instructor/live?${base}">Live sessions</a> <a href="/instructor/sections?${base}">Manage sections</a> <a href="/instructor/arrival?${base}">Arrival callbacks</a></nav><section><b>${attemptCounts?.total||0}</b> verified click attempts · <b>${attemptCounts?.blocked||0}</b> blocked repeat attempts · <b>${counts?.total||0}</b> launches · <b>${counts?.confirmed_arrivals||0}</b> reported arrivals · <b>${counts?.students||0}</b> students · <b>${counts?.links||0}</b> activities · <b>${counts?.generations||0}</b> generations<br>First ${timeCell(counts?.first_launch)} · Last ${timeCell(counts?.last_launch)}</section>${filter}${exports}${tables}<h2>Verified click attempt history</h2><p>Includes repeat clicks blocked by the bridge. Canvas may prevent access before a request reaches this tool.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Outcome</th><th>Generation</th></tr>${attemptHistory}</table><h2>Chronological successful launch history</h2><p data-local-timezone>Times shown in UTC; browser-local times load automatically.</p><table><tr><th>Timestamp (UTC)</th><th>Activity</th><th>Student code</th><th>Generation</th><th>Section</th><th>Redirect</th><th>Destination opened (UTC)</th></tr>${tbody}</table><p>Page ${page} · <a href="${escapeHtml(next.pathname+next.search)}">Next page</a></p><script defer src="/static/dashboard.js"></script>`));
 }
 // Export every row using stable keyset pagination, rather than silently
 // truncating education records at an arbitrary LIMIT.
@@ -588,7 +747,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     const existingVersion=await env.DB.prepare('SELECT key_version FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at LIMIT 1').bind(deploy,course).first<{key_version:string}>();
     const keyVersion=existingVersion?.key_version || activeKeyVersion(env);
     keyForVersion(env,keyVersion);
-    const insert=env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version,generation_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion,generationMode);
+    const insert=env.DB.prepare('INSERT INTO links(id,deployment_id,course_id,title,destination,user_scope,forward_user,forward_course,forward_section,forward_link,forward_launch,section_required,created_by,created_at,key_version,generation_mode,live_code_required) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,deploy,course,form.title.trim(),form.destination,scope,form.user==='on'?1:0,form.course_code==='on'?1:0,form.section==='on'?1:0,form.link==='on'?1:0,form.launch==='on'?1:0,form.section_required==='on'?1:0,session.user,new Date().toISOString(),keyVersion,generationMode,form.live_code==='on'?1:0);
     if(returnUrl){
       // Consume the one-time request and persist its link atomically.
       const changes=await env.DB.batch([
@@ -618,7 +777,7 @@ async function createLink(req:Request,env:Env):Promise<Response>{
   const generationOptions=(['once_per_student','reuse_generation','new_each_time'] as GenerationMode[])
     .map(mode=>`<option value="${mode}" ${mode==='new_each_time'?'selected':''}>${generationModeLabel(mode)}</option>`).join('');
   const checked=(name:string,yes:boolean)=>`<label><input type="checkbox" name="${name}" ${yes?'checked':''}> Forward ${name}</label>`;
-  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="deep_challenge" value="${escapeHtml(deepChallenge)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label><label>Activity reuse <select name="generation_mode">${generationOptions}</select></label><p>Once per student blocks repeat visits. Reopen uses the same generation ID on each visit. New generation creates a fresh generation ID on each visit. Every successful visit gets its own launch ID.</p>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
+  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="deep_challenge" value="${escapeHtml(deepChallenge)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label><label>Activity reuse <select name="generation_mode">${generationOptions}</select></label><label><input type="checkbox" name="live_code"> Require an instructor-controlled in-class session code</label><p>Once per student blocks repeat visits. Reopen uses the same generation ID on each visit. New generation creates a fresh generation ID on each visit. Every successful visit gets its own launch ID.</p>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
 }
 export default {
   async fetch(req:Request,env:Env):Promise<Response>{
@@ -633,6 +792,8 @@ export default {
       if(path==='/instructor'&&req.method==='GET')return dashboard(req,env);
       if(path==='/instructor/sections'&&['GET','POST'].includes(req.method))return manageSections(req,env);
       if(path==='/instructor/create'&&['GET','POST'].includes(req.method))return createLink(req,env);
+      if(path==='/instructor/live'&&['GET','POST'].includes(req.method))return manageLiveSessions(req,env);
+      if(path==='/lti/live-code'&&req.method==='POST')return submitLiveCode(req,env);
       if(path==='/instructor/arrival'&&['GET','POST'].includes(req.method))return manageArrivalKeys(req,env);
       if(path==='/api/arrival'&&req.method==='POST')return receiveArrival(req,env);
       if(path==='/instructor/export'&&req.method==='GET')return exportCsv(req,env);
