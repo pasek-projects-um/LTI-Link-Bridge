@@ -57,7 +57,9 @@ function contextId(claims:Launch):string {const value=claims[courseClaim]?.id; i
 function resourceId(claims:Launch):string {const value=claims[resourceClaim]?.id; if(typeof value!=='string' || !value) throw new Error('Missing resource link');return value;}
 function cookieHeader(value:string,ttl:number,site:'None'|'Lax'='None') {return `${cookieName}=${value}; HttpOnly; Secure; SameSite=${site}; Path=/; Max-Age=${ttl}`;}
 async function sessionCookie(env:Env,user:string,course:string,deploy:string,site:'None'|'Lax'='None'):Promise<string>{
-  const ttl=Number(env.SESSION_TTL_SECONDS || '14400');const exp=Math.floor(Date.now()/1000)+ttl;
+  const configuredTtl=Number(env.SESSION_TTL_SECONDS || '14400');
+  const ttl=Number.isFinite(configuredTtl)?Math.max(300,Math.min(14400,Math.floor(configuredTtl))):14400;
+  const exp=Math.floor(Date.now()/1000)+ttl;
   const data=[user,course,deploy,String(exp)].map(encodeURIComponent).join('|');
   return cookieHeader(`${encodeURIComponent(data)}.${await hmac(env.SESSION_SECRET,'session',data)}`,ttl,site);
 }
@@ -69,7 +71,7 @@ async function readSession(req:Request,env:Env):Promise<{user:string;course:stri
   const data=decodeURIComponent(raw.slice(0,last));const signature=raw.slice(last+1);
   if(signature!==await hmac(env.SESSION_SECRET,'session',data))return null;
   const [user,course,deploy,exp]=data.split('|').map(decodeURIComponent);
-  if(!user||!course||!deploy||Number(exp)<Date.now()/1000)return null;
+  if(!user||!course||!deploy||!/^\d+$/.test(exp)||Number(exp)<Date.now()/1000)return null;
   return {user,course,deploy};
   }catch{return null;}
 }
@@ -79,7 +81,8 @@ async function authorize(req:Request,env:Env,course:string,deploy:string) {
   const verified=await env.DB.prepare('SELECT user_id FROM instructors WHERE deployment_id=? AND course_id=? AND user_id=?').bind(deploy,course,session.user).first();
   if(!verified)return null;
   const recent=await env.DB.prepare('SELECT last_verified_at FROM instructors WHERE deployment_id=? AND course_id=? AND user_id=?').bind(deploy,course,session.user).first<{last_verified_at:string}>();
-  const ttl=Math.max(300,Math.min(14400,Number(env.SESSION_TTL_SECONDS||'14400')));
+  const configuredTtl=Number(env.SESSION_TTL_SECONDS||'14400');
+  const ttl=Number.isFinite(configuredTtl)?Math.max(300,Math.min(14400,Math.floor(configuredTtl))):14400;
   return recent && Date.parse(recent.last_verified_at)>=Date.now()-ttl*1000 ? session:null;
 }
 async function makeInstructorTicket(env:Env,user:string,course:string,deploy:string,nextPath:string):Promise<string> {
@@ -141,7 +144,7 @@ async function verifyLaunch(req:Request,env:Env) {
     throw new Error('Inconsistent platform registration for deployment');
   if(claims[LTI+'version']!=='1.3.0')throw new Error('Unsupported LTI version');
   if(!['LtiResourceLinkRequest','LtiDeepLinkingRequest'].includes(claims[messageClaim]))throw new Error('Unsupported LTI message type');
-  if(!Array.isArray(claims[roleClaim]))throw new Error('Missing LTI roles');
+  if(!Array.isArray(claims[roleClaim]) || !claims[roleClaim].every((r:unknown)=>typeof r==='string'))throw new Error('Missing or invalid LTI roles');
   const change=await env.DB.prepare('UPDATE oidc_states SET consumed_at=? WHERE state=? AND consumed_at IS NULL AND expires_at>=?').bind(Math.floor(Date.now()/1000),state,Math.floor(Date.now()/1000)).run();
   if(change.meta.changes!==1)throw new Error('Replayed LTI state');
   return {claims,registration:actualRegistration,token:idToken};
