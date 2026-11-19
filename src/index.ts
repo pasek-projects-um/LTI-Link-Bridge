@@ -108,7 +108,8 @@ async function login(req:Request,env:Env):Promise<Response>{
   if(!issuer||!clientId||!target)return error(400,'Missing login initiation parameters');
   const deployment=await registration(env,issuer,clientId);
   if(!deployment)return error(403,'Unregistered platform/client');
-  if(new URL(target).origin !== new URL(env.PUBLIC_BASE_URL).origin || new URL(target).pathname!=='/lti/launch')return error(400,'Invalid target URI');
+  let targetUrl:URL;try{targetUrl=new URL(target);}catch{return error(400,'Invalid target URI');}
+  if(targetUrl.toString()!==new URL('/lti/launch',env.PUBLIC_BASE_URL).toString())return error(400,'Invalid target URI');
   const state=urlToken();const nonce=urlToken();const now=Math.floor(Date.now()/1000);
   await env.DB.prepare('INSERT INTO oidc_states(state,nonce,deployment_id,created_at,expires_at) VALUES(?,?,?,?,?)').bind(state,nonce,deployment.id,now,now+600).run();
   const redirect=new URL(deployment.auth_url);
@@ -177,7 +178,12 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   if(!link)return error(403,'Resource link has no authorized destination');
   const bound=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?').bind(reg.id,course,resource).first<{link_id:string}>();
   if(bound && bound.link_id!==link.id)return error(403,'Conflicting resource binding');
-  if(!bound)await env.DB.prepare('INSERT OR IGNORE INTO link_resources(deployment_id,course_id,resource_link_id,link_id) VALUES(?,?,?,?)').bind(reg.id,course,resource,link.id).run();
+  if(!bound){
+    await env.DB.prepare('INSERT OR IGNORE INTO link_resources(deployment_id,course_id,resource_link_id,link_id) VALUES(?,?,?,?)').bind(reg.id,course,resource,link.id).run();
+    // Two simultaneous first launches must never authorize conflicting link IDs.
+    const canonical=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?').bind(reg.id,course,resource).first<{link_id:string}>();
+    if(canonical?.link_id!==link.id)return error(403,'Conflicting resource binding');
+  }
   if(!allowedDestination(link.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(403,'Destination domain is not approved');
   if(!isLocalDevelopment(env) && new URL(link.destination).protocol!=='https:')return error(403,'HTTP destinations disabled');
   const version=String(link.key_version||'v1');const secret=keyForVersion(env,version);
@@ -189,6 +195,9 @@ async function handleResource(env:Env,claims:Launch,reg:Registration,token:strin
   const membership=await env.DB.prepare("SELECT section_id FROM section_memberships WHERE deployment_id=? AND course_id=? AND user_id=? ORDER BY CASE source WHEN 'instructor' THEN 0 ELSE 1 END, section_id LIMIT 1").bind(reg.id,course,user).first<{section_id:string}>();
   const sectionCode=membership?await pseudonym(secret,'S',version,...base,membership.section_id):null;
   if(link.section_required && !sectionCode)return error(409,'Section membership unresolved');
+  // A returned code can only be used for destinations if explicitly enabled;
+  // resolved sections are still retained in the protected launch record.
+  
   const eventId=randomId(),at=new Date().toISOString(),origin=new URL(link.destination).origin;
   const target=buildDestination(link.destination,{
     user:link.forward_user?userCode:undefined,course:link.forward_course?courseCode:undefined,
