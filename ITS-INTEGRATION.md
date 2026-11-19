@@ -43,6 +43,16 @@ API results are filtered to the exact user/course, active/invited enrollments an
 - Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
 - Data retention schedule and staff authorization policy are TBD.
 
+## Additional hardening completed in the development simulator
+
+- OIDC login accepts only the canonical tool launch URL, without query parameters or fragments; tokens must also satisfy issuer, audience, nonce, deployment, expiry and exact LTI role claim validation.
+- Resource-link bindings are enforced for existing placements and checked after concurrent initial binding attempts. Copying or restoring course links still needs validation in real Canvas.
+- Destination URL construction strips preexisting bridge-managed query names (even when forwarding is disabled) so an instructor-configured URL cannot accidentally supply misleading student, course or section codes.
+- Instructor forms enforce identifier and title constraints; a section-required activity must enable section forwarding.
+- A successful launch is recorded before redirect, with duplicate token rejection; identity metadata is written in the same transactional D1 batch.
+- Signed Deep Linking launches create an expiring, single-use D1 context. The context and new link are committed atomically; retries after the first save are rejected. The new context table is created in migration `0008_deep_link_contexts.sql` and scheduled cleanup removes expired requests.
+- These checks are validated against the local signed simulator, **not** a U-M Canvas integration. Do not claim an institutional penetration test, privacy approval or production readiness.
+
 ## Testing and approval checklist
 - [x] Implement local test-key Canvas simulator and automated OIDC, replay, launch, Deep Linking and authorization tests (Cloudflare CI).
 - [ ] Extend test suite and perform Canvas browser validation with university test environment.
