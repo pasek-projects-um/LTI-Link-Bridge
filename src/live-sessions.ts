@@ -126,7 +126,7 @@ export async function admitStudent(
 
   const time=new Date(),since=new Date(time.getTime()-15*60_000).toISOString();
   const attempts=await db.prepare(`SELECT COUNT(*) AS total FROM live_code_attempts
-    WHERE session_id=? AND user_code=? AND attempted_at>=? AND result!='accepted'`)
+    WHERE session_id=? AND user_code=? AND attempted_at>=? AND result='incorrect'`)
     .bind(session.id,fields.userCode,since).first<{total:number}>();
   if((attempts?.total||0)>=5){
     await db.prepare('INSERT INTO live_code_attempts(id,session_id,user_code,attempted_at,result) VALUES(?,?,?,?,?)')
