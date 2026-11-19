@@ -1,4 +1,4 @@
-import { fingerprint, hmac, randomId, urlToken } from './crypto.ts';
+import { hmac, randomId, urlToken } from './crypto.ts';
 
 /** A live cohort is separate from a Canvas assignment and an activity generation. */
 export interface LiveSession {
@@ -56,7 +56,7 @@ export async function createLiveSession(
   }
 ): Promise<NewLiveSession> {
   const code=fields.code?.trim() || generateClassCode();
-  if(!validClassCode(code))throw new Error('Class codes need 10 letters or digits (2-9)');
+  if(!validClassCode(code))throw new Error('Class codes need 10 unambiguous letters or digits (2-9)');
   const existing=await db.prepare(
     "SELECT id FROM live_sessions WHERE deployment_id=? AND course_id=? AND link_id=? AND state='open'"
   ).bind(fields.deployment,fields.course,fields.link).first();
