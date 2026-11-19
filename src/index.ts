@@ -175,11 +175,14 @@ async function refreshCanvasMembership(env:Env,reg:Registration,course:string,us
 async function handleResource(env:Env,claims:Launch,reg:Registration,token:string):Promise<Response>{
   const course=contextId(claims),resource=resourceId(claims),user=String(claims.sub);
   const configured=getLinkId(claims);
+  const bound=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?').bind(reg.id,course,resource).first<{link_id:string}>();
+  // A previously bound Canvas placement is authoritative. A signed custom
+  // claim from another placement must never silently rebind that resource.
+  if(bound && configured && bound.link_id!==configured)return error(403,'Conflicting resource binding');
   const link=configured
     ? await env.DB.prepare('SELECT * FROM links WHERE id=? AND course_id=? AND deployment_id=?').bind(configured,course,reg.id).first<Launch>()
     : await env.DB.prepare('SELECT links.* FROM links JOIN link_resources r ON r.link_id=links.id WHERE r.deployment_id=? AND r.course_id=? AND r.resource_link_id=?').bind(reg.id,course,resource).first<Launch>();
   if(!link)return error(403,'Resource link has no authorized destination');
-  const bound=await env.DB.prepare('SELECT link_id FROM link_resources WHERE deployment_id=? AND course_id=? AND resource_link_id=?').bind(reg.id,course,resource).first<{link_id:string}>();
   if(bound && bound.link_id!==link.id)return error(403,'Conflicting resource binding');
   if(!bound){
     await env.DB.prepare('INSERT OR IGNORE INTO link_resources(deployment_id,course_id,resource_link_id,link_id) VALUES(?,?,?,?)').bind(reg.id,course,resource,link.id).run();
