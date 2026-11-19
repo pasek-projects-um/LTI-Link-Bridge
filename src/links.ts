@@ -8,16 +8,16 @@ export function buildDestination(destination: string, options: ForwardOptions, n
     throw new Error('Destination must be HTTPS');
   }
   if (url.username || url.password) throw new Error('Credentials in destination URL are forbidden');
-  for (const param of DEFAULT_PARAMS) {
-    const name = names[param] ?? param;
-    if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(name)) throw new Error('Invalid parameter name');
-    // Existing destination query parameters are preserved except for all
-    // bridge-managed parameter names. Otherwise an attacker could supply a
-    // stale user/section code when forwarding is disabled.
-    url.searchParams.delete(name);
-    const value = options[param];
-    if (!value) continue;
-    url.searchParams.set(name, value);
+  const configuredNames = DEFAULT_PARAMS.map(param => names[param] ?? param);
+  if (configuredNames.some(name=>!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(name)))
+    throw new Error('Invalid parameter name');
+  if (new Set(configuredNames).size !== configuredNames.length)throw new Error('Bridge parameter names must be distinct');
+  // Remove both default and customized parameter names. Otherwise an activity
+  // could receive spoofed or stale identifiers from its preconfigured URL.
+  for(const name of new Set([...DEFAULT_PARAMS,...configuredNames]))url.searchParams.delete(name);
+  for(const param of DEFAULT_PARAMS){
+    const value=options[param];
+    if(value)url.searchParams.set(names[param] ?? param,value);
   }
   return url.toString();
 }
