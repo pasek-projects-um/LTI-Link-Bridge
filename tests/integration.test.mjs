@@ -463,3 +463,28 @@ test('rejects requiring a section when section forwarding is disabled',async()=>
   })});
   assert.equal(bad.status,400);
 });
+
+test('Deep Linking context is single-use and rejects replays after saving',async()=>{
+  const start=await launch({role:'instructor',kind:'deep',user:'teacher-1'});
+  assert.equal(start.post.status,200);
+  const href=decodeHtml((await start.post.text()).match(/href="([^"]+)"/)[1]);
+  const continued=await fetch(bridge+href,{redirect:'manual'});
+  assert.equal(continued.status,303);
+  const cookie=continued.headers.get('set-cookie').split(';')[0];
+  const builder=await fetch(new URL(continued.headers.get('location'),bridge),{headers:{Cookie:cookie}});
+  assert.equal(builder.status,200);
+  const html=await builder.text();
+  const postData={
+    course:hidden(html,'course'),deployment:hidden(html,'deployment'),return:hidden(html,'return'),
+    data:hidden(html,'data'),deep_challenge:hidden(html,'deep_challenge'),csrf:hidden(html,'csrf'),
+    title:'One time only',destination:sim+'/activity',scope:'course',user:'on'
+  };
+  const send=()=>fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams(postData)});
+  const first=await send();
+  assert.equal(first.status,200);
+  const second=await send();
+  assert.equal(second.status,403,'Replayed Deep Linking context must not create another link');
+  const url=new URL(continued.headers.get('location'),bridge);
+  const again=await fetch(url,{headers:{Cookie:cookie}});
+  assert.equal(again.status,403,'Consumed Deep Linking context cannot be reopened');
+});
