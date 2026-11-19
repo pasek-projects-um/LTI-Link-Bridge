@@ -232,12 +232,14 @@ async function handleDeepLink(req:Request,env:Env,claims:Launch,reg:Registration
   await env.DB.prepare('INSERT INTO instructors(deployment_id,course_id,user_id,last_verified_at) VALUES(?,?,?,?) ON CONFLICT(deployment_id,course_id,user_id) DO UPDATE SET last_verified_at=excluded.last_verified_at').bind(reg.id,course,user,now).run();
   const cookie=await sessionCookie(env,user,course,reg.id);
   const returnData=typeof settings.data==='string'?settings.data:'';
-  const challenge=await hmac(env.SESSION_SECRET,'deep',reg.id,course,user,settings.deep_link_return_url,returnData);
+  const challenge=urlToken(32);
+  await env.DB.prepare('INSERT INTO deep_link_contexts(challenge,deployment_id,course_id,user_id,return_url,return_data,expires_at) VALUES(?,?,?,?,?,?,?)')
+    .bind(challenge,reg.id,course,user,settings.deep_link_return_url,returnData,Math.floor(Date.now()/1000)+600).run();
   const url=new URL(req.url);url.pathname='/instructor/create';
   url.search='';url.searchParams.set('course',course);url.searchParams.set('deployment',reg.id);
   url.searchParams.set('return',settings.deep_link_return_url);
   url.searchParams.set('data',returnData);
-  url.searchParams.set('csrf',challenge);
+  url.searchParams.set('deep_challenge',challenge);
   const resume=await makeInstructorTicket(env,user,course,reg.id,url.pathname+url.search);
   return response(html('Configure a Canvas link',`<p>Open the Canvas link builder in a new tab to avoid third-party cookie restrictions.</p><a href="${escapeHtml(resume)}" target="_blank" rel="noopener">Create link</a>`),200,'text/html; charset=utf-8',{'Set-Cookie':cookie});
 }
@@ -502,11 +504,16 @@ async function createLink(req:Request,env:Env):Promise<Response>{
   const url=new URL(req.url),form=req.method==='POST'?await parseForm(req):Object.fromEntries(url.searchParams);
   const course=form.course||'',deploy=form.deployment||'';
   const session=await authorize(req,env,course,deploy);if(!session)return error(403,'Instructor access required');
-  const returnUrl=form.return||'',data=form.data||'';
-  const expected=returnUrl?await hmac(env.SESSION_SECRET,'deep',deploy,course,session.user,returnUrl,data):'';
+  const returnUrl=form.return||'',data=form.data||'',deepChallenge=form.deep_challenge||'';
+  const deepContext=returnUrl?await env.DB.prepare('SELECT return_url,return_data,expires_at,consumed_at FROM deep_link_contexts WHERE challenge=? AND deployment_id=? AND course_id=? AND user_id=?')
+    .bind(deepChallenge,deploy,course,session.user).first<{return_url:string;return_data:string;expires_at:number;consumed_at:number|null}>():null;
+  const validDeepContext=!!deepContext && deepContext.return_url===returnUrl && deepContext.return_data===data &&
+    deepContext.consumed_at===null && deepContext.expires_at>=Math.floor(Date.now()/1000);
   if(req.method==='POST'){
     const origin=req.headers.get('origin');if(origin && origin!==url.origin)return error(403,'Cross-site request rejected');
-    if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data))return error(403,'Invalid form token');
+    if(form.csrf!==await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data,deepChallenge))return error(403,'Invalid form token');
+    if(returnUrl && !validDeepContext)return error(403,'Expired, reused, or invalid Deep Linking context');
+    if(!returnUrl && deepChallenge)return error(403,'Invalid Deep Linking context');
     if(!form.title?.trim()||!form.destination)return error(400,'Title and destination required');
     if(!allowedDestination(form.destination,env.DESTINATION_ALLOWLIST||'',isLocalDevelopment(env)))return error(400,'Unapproved destination');
     if(form.title.trim().length>120)return error(400,'Activity name must be 120 characters or fewer');
@@ -516,6 +523,11 @@ async function createLink(req:Request,env:Env):Promise<Response>{
       const reg=await env.DB.prepare('SELECT * FROM deployments WHERE id=?').bind(deploy).first<Registration>();
       if(!reg)return error(404,'Deployment missing');
       try{validatedDeepLinkReturn(returnUrl,reg,env);}catch{return error(403,'Deep Linking return origin not registered');}
+    }
+    if(returnUrl){
+      const consumed=await env.DB.prepare('UPDATE deep_link_contexts SET consumed_at=? WHERE challenge=? AND deployment_id=? AND course_id=? AND user_id=? AND consumed_at IS NULL AND expires_at>=?')
+        .bind(Math.floor(Date.now()/1000),deepChallenge,deploy,course,session.user,Math.floor(Date.now()/1000)).run();
+      if(consumed.meta.changes!==1)return error(403,'Deep Linking context already used');
     }
     const scope=['global','course','activity'].includes(form.scope)?form.scope:'course';const id=randomId();
     const existingVersion=await env.DB.prepare('SELECT key_version FROM links WHERE deployment_id=? AND course_id=? ORDER BY created_at LIMIT 1').bind(deploy,course).first<{key_version:string}>();
@@ -536,10 +548,11 @@ async function createLink(req:Request,env:Env):Promise<Response>{
     }
     return response(html('Link saved',`<p>Saved ${escapeHtml(form.title)}. Link ID: <code>${escapeHtml(id)}</code></p><a href="/instructor?course=${encodeURIComponent(course)}&deployment=${encodeURIComponent(deploy)}">Dashboard</a>`));
   }
-  if(returnUrl&&form.csrf!==expected)return error(403,'Invalid Deep Linking context');
-  const csrf=await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data);
+  if(returnUrl&&!validDeepContext)return error(403,'Expired, reused, or invalid Deep Linking context');
+  if(!returnUrl&&deepChallenge)return error(403,'Invalid Deep Linking context');
+  const csrf=await hmac(env.SESSION_SECRET,'create',deploy,course,session.user,returnUrl,data,deepChallenge);
   const checked=(name:string,yes:boolean)=>`<label><input type="checkbox" name="${name}" ${yes?'checked':''}> Forward ${name}</label>`;
-  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
+  return response(html('Create external activity link',`<form method="post"><input type="hidden" name="course" value="${escapeHtml(course)}"><input type="hidden" name="deployment" value="${escapeHtml(deploy)}"><input type="hidden" name="return" value="${escapeHtml(returnUrl)}"><input type="hidden" name="data" value="${escapeHtml(data)}"><input type="hidden" name="deep_challenge" value="${escapeHtml(deepChallenge)}"><input type="hidden" name="csrf" value="${csrf}"><label>Activity name <input name="title" required maxlength="120"></label><label>Destination URL <input name="destination" type="url" required size="70" placeholder="https://example.edu/activity"></label><label>User code scope <select name="scope"><option value="course">Within course (default)</option><option value="global">Global within deployment</option><option value="activity">Within activity</option></select></label>${checked('user',true)}${checked('course_code',true)}${checked('section',false)}${checked('link',true)}${checked('launch',true)}<label><input type="checkbox" name="section_required"> Require resolved section to launch</label><button>Save ${returnUrl?'and return to Canvas':''}</button></form>`));
 }
 export default {
   async fetch(req:Request,env:Env):Promise<Response>{
