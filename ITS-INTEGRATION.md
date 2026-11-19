@@ -43,6 +43,12 @@ API results are filtered to the exact user/course, active/invited enrollments an
 - Approved outbound domain allowlist; public base URL; Canvas platform registrations stored in D1.
 - Data retention schedule and staff authorization policy are TBD.
 
+## Student activity reuse and generation semantics
+
+The instructor chooses a per-student reuse policy for each new activity: once per student, reopen the same generation, or create a new generation on every visit. Each successful Canvas visit receives a unique launch ID; a generation ID identifies the activity attempt and can be reused across launches. The bridge forwards `generation` as a query parameter, but the destination must implement persistence/resumption using that identifier if reopening is desired.
+
+The policy is enforced using the **verified Canvas user ID** scoped to deployment, course and activity, not a browser-supplied student code. The database stores generation history in `link_generations` and attaches `generation_id` to launch records. Migration `0009_link_generations.sql` is required. Existing activity links default to their prior behavior (new generation on every visit). Real Canvas testing is still required before classroom deployment.
+
 ## Additional hardening completed in the development simulator
 
 - OIDC login accepts only the canonical tool launch URL, without query parameters or fragments; tokens must also satisfy issuer, audience, nonce, deployment, expiry and exact LTI role claim validation.
