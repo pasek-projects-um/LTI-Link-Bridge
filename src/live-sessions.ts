@@ -144,8 +144,11 @@ export async function admitStudent(
     db.prepare(`INSERT OR IGNORE INTO live_admissions(session_id,user_id,admitted_at)
       SELECT ?,?,? WHERE EXISTS (
         SELECT 1 FROM live_sessions WHERE id=? AND state='open'
-      ) AND ?='accepted'`)
-      .bind(session.id,fields.canvasUserId,at,session.id,result)
+      ) AND ?='accepted' AND (
+        SELECT COUNT(*) FROM live_code_attempts
+        WHERE session_id=? AND user_code=? AND attempted_at>=? AND result='incorrect'
+      )<=5`)
+      .bind(session.id,fields.canvasUserId,at,session.id,result,session.id,fields.userCode,since)
   ]);
   if(!valid)return {status:'incorrect'};
   return await admittedToSession(db,session.id,fields.canvasUserId)
