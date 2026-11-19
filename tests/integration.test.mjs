@@ -383,3 +383,68 @@ test('identity export keyset retains all 900 rows including 450 codes owned by o
   const shared=lines.filter(line=>line.startsWith('"cursor-student-000"'));
   assert.equal(shared.length,451,'All codes from the same user must survive cross-page continuation');
 });
+
+test('rejects noncanonical OIDC target link URLs before platform authorization',async()=>{
+  const origin=sim,client='bridge-simulator';
+  for(const target of [bridge+'/lti/launch?extra=1',bridge+'/lti/launch#fragment',bridge+'/lti/launch/extra']){
+    const response=await fetch(bridge+'/lti/login?'+new URLSearchParams({
+      iss:origin,client_id:client,target_link_uri:target,login_hint:'test'
+    }),{redirect:'manual'});
+    assert.equal(response.status,400,'Noncanonical target must be refused: '+target);
+  }
+});
+
+test('conflicting resource placement refuses an alternate custom link after first binding',async()=>{
+  const initial=await launch({user:'resource-binding-user',link:'sim-activity-a'});
+  assert.equal(initial.post.status,303);
+  // Use the same signed resource_link_id but a different configured custom link.
+  const conflict=await launch({user:'resource-binding-user',link:'sim-activity-a',customLink:'sim-activity-b'});
+  assert.equal(conflict.post.status,403);
+});
+
+test('activity creation rejects overly long titles and unsafe section IDs server-side',async()=>{
+  const teacher=await launch({role:'instructor',kind:'dashboard',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const cookie=teacher.post.headers.get('set-cookie').split(';')[0];
+  const builder=await fetch(bridge+'/instructor/create?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  const html=await builder.text();
+  const result=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
+    course:'course-a',deployment:'sim-1',return:'',data:'',csrf:hidden(html,'csrf'),
+    title:'X'.repeat(121),destination:sim+'/activity',scope:'course',user:'on'
+  })});
+  assert.equal(result.status,400);
+  const screen=await fetch(bridge+'/instructor/sections?course=course-a&deployment=sim-1',{headers:{Cookie:cookie}});
+  const csrf=hidden(await screen.text(),'csrf');
+  const unsafe=await fetch(bridge+'/instructor/sections',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
+    course:'course-a',deployment:'sim-1',csrf,user_id:'student-1',section_id:'section;injection',action:'add'
+  })});
+  assert.equal(unsafe.status,400);
+});
+
+test('disabled forwarding strips stale bridge-managed query parameters',async()=>{
+  const teacher=await launch({role:'instructor',kind:'deep',user:'teacher-1'});
+  assert.equal(teacher.post.status,200);
+  const landing=await teacher.post.text();
+  const resume=decodeHtml(landing.match(/href="([^"]+)"/)[1]);
+  const continued=await fetch(bridge+resume,{redirect:'manual'});
+  const cookie=continued.headers.get('set-cookie').split(';')[0];
+  const form=await fetch(new URL(continued.headers.get('location'),bridge),{headers:{Cookie:cookie}});
+  const html=await form.text();
+  const created=await fetch(bridge+'/instructor/create',{method:'POST',headers:{Cookie:cookie,Origin:bridge},body:new URLSearchParams({
+    course:hidden(html,'course'),deployment:hidden(html,'deployment'),return:hidden(html,'return'),
+    data:hidden(html,'data'),csrf:hidden(html,'csrf'),title:'No User Forwarding',
+    destination:sim+'/activity?keep=1&user=U_fake&section=S_fake',scope:'course',
+    course_code:'on',link:'on',launch:'on'
+  })});
+  assert.equal(created.status,200);
+  const signed=hidden(await created.text(),'JWT');
+  assert.equal((await fetch(sim+'/return',{method:'POST',body:new URLSearchParams({JWT:signed})})).status,200);
+  const items=await (await fetch(sim+'/links')).json();
+  const newLink=items['course-a'].at(-1).link;
+  const student=await launch({user:'forward-disabled-student',link:newLink});
+  assert.equal(student.post.status,303);
+  const destination=new URL(student.post.headers.get('location'));
+  assert.equal(destination.searchParams.get('keep'),'1');
+  assert.equal(destination.searchParams.get('user'),null);
+  assert.equal(destination.searchParams.get('section'),null);
+});
